@@ -348,8 +348,12 @@ class Meter:
                 section = self.section_of(name)
                 if section is None:
                     continue
+                # В боевых строках свой персонаж всегда "You" — в таблице
+                # показываем настоящий ник, если он уже известен.
+                display = self.self_name if (name == SELF and self.self_name) else name
                 rows.append({
                     "name": name,
+                    "display": display,
                     "section": section,
                     "total": a.total,
                     "dps": a.dps_now(now, window),
@@ -362,16 +366,22 @@ class Meter:
                     "skills": a.skills.most_common(8),
                 })
 
-        # Сортировка: сначала своя группа, внутри — по урону.
-        # Три ключа, иначе строки прыгают местами при равенстве.
-        order = {"party": 0, "other": 1}
-        rows.sort(key=lambda r: (order[r["section"]], -r["total"], -r["hits"], r["name"]))
+        split = cfg.get("scope") == "split"
+        # Три ключа сортировки, иначе строки прыгают местами при равенстве.
+        # Разбиение на секции — только когда его действительно попросили:
+        # иначе список один и порядок строго по урону.
+        if split:
+            order = {"party": 0, "other": 1}
+            rows.sort(key=lambda r: (order[r["section"]], -r["total"], -r["hits"], r["name"]))
+            groups = [("party", [r for r in rows if r["section"] == "party"]),
+                      ("other", [r for r in rows if r["section"] == "other"])]
+        else:
+            rows.sort(key=lambda r: (-r["total"], -r["hits"], r["name"]))
+            groups = [("all", rows)]
 
-        # Доля и длина полосы считаются ВНУТРИ секции: сравнивать себя
-        # осмысленно с согруппниками, а не с посторонним фармером рядом.
+        # Доля — от суммы своей группы строк, длина полосы — от лидера.
         sections = []
-        for key in ("party", "other"):
-            part = [r for r in rows if r["section"] == key]
+        for key, part in groups:
             if not part:
                 continue
             sec_total = sum(r["total"] for r in part) or 1
@@ -386,7 +396,7 @@ class Meter:
         return {
             "rows": shown,
             "sections": sections,
-            "split": cfg.get("scope", "split") == "split",
+            "split": split,
             "hidden": max(0, len(rows) - limit),
             "total": sum(r["total"] for r in rows),
             "duration": enc.duration if enc and enc.start else 0,

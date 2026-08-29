@@ -125,21 +125,7 @@ class SettingsDialog(QDialog):
             "Средний DPS считается по активному времени. Пауза в 2–3 секунды — "
             "это нормальная скорость атаки, поэтому ниже 5 с ставить не стоит."))
 
-        self.cb_scope = QComboBox()
-        self.cb_scope.addItem("Группа и остальные — раздельно", "split")
-        self.cb_scope.addItem("Только группа, я и мои петы", "party")
-        self.cb_scope.addItem("Все одним списком", "all")
-        idx = self.cb_scope.findData(self.cfg.get("scope", "split"))
-        self.cb_scope.setCurrentIndex(max(0, idx))
-        form.addRow("Кого показывать", self.cb_scope)
-        form.addRow("", self._hint(
-            "Доля и длина полосы считаются внутри своей секции: сравнивать себя "
-            "осмысленно с согруппниками, а не с посторонним фармером рядом. "
-            "Состав группы ведётся по событиям входа и выхода, поэтому если "
-            "запустить метр, уже находясь в группе, он её не увидит — "
-            "пересоберите группу или смотрите «все одним списком»."))
-
-        self.ch_mobs = QCheckBox("Скрывать мобов и тех, кто бьёт нас")
+        self.ch_mobs = QCheckBox("Скрывать мобов и NPC")
         self.ch_mobs.setChecked(self.cfg.get("hide_mobs", True))
         self.ch_pets = QCheckBox("Урон питомцев приписывать владельцу")
         self.ch_pets.setChecked(self.cfg.get("merge_pets", True))
@@ -158,28 +144,6 @@ class SettingsDialog(QDialog):
         idx = self.cb_metric.findData(self.cfg.get("metric", "damage"))
         self.cb_metric.setCurrentIndex(max(0, idx))
         form.addRow("Показывать", self.cb_metric)
-
-        self.cb_mode = QComboBox()
-        self.cb_mode.addItem("Копить до очистки", "session")
-        self.cb_mode.addItem("Только текущий бой", "encounter")
-        idx = self.cb_mode.findData(self.cfg.get("mode", "session"))
-        self.cb_mode.setCurrentIndex(max(0, idx))
-        form.addRow("Режим счёта", self.cb_mode)
-        form.addRow("", self._hint(
-            "«Копить» — цифры держатся, пока не нажать очистку (кнопка в шапке "
-            "или Ctrl+Alt+R). «Только текущий бой» — таблица сама обнуляется "
-            "между боями."))
-
-        box = QGroupBox("Колонки")
-        grid = QGridLayout(box)
-        self.col_checks = {}
-        active = self.cfg.get("columns", [])
-        for i, (key, label) in enumerate(COLUMNS):
-            ch = QCheckBox(label)
-            ch.setChecked(key in active)
-            self.col_checks[key] = ch
-            grid.addWidget(ch, i // 3, i % 3)
-        form.addRow(box)
 
         self.ch_loot = QCheckBox("Строка добычи внизу (опыт, AP, кинах, убийства)")
         self.ch_loot.setChecked(self.cfg.get("show_loot", True))
@@ -228,7 +192,8 @@ class SettingsDialog(QDialog):
         form.setSpacing(9)
         binds = self.cfg.get("hotkeys", {})
         self.key_edits = {}
-        for key, label in (("reset", "Сбросить бой"), ("click_through", "Клик насквозь"),
+        for key, label in (("reset", "Очистить"), ("pause", "Старт / стоп"),
+                           ("click_through", "Клик насквозь"),
                            ("hide", "Скрыть / показать"), ("copy", "Скопировать в буфер")):
             ed = QLineEdit(binds.get(key, ""))
             ed.setPlaceholderText("например Ctrl+Alt+R — пусто значит выключено")
@@ -303,11 +268,9 @@ class SettingsDialog(QDialog):
         cfg["dps_window"] = self.sp_window.value()
         cfg["encounter_timeout"] = self.sp_timeout.value()
         cfg["active_gap"] = self.sp_gap.value()
-        cfg["scope"] = self.cb_scope.currentData()
         cfg["hide_mobs"] = self.ch_mobs.isChecked()
         cfg["merge_pets"] = self.ch_pets.isChecked()
         cfg["metric"] = self.cb_metric.currentData()
-        cfg["mode"] = self.cb_mode.currentData()
         cfg["transparent"] = self.ch_transparent.isChecked()
         cfg["show_loot"] = self.ch_loot.isChecked()
         cfg["columns"] = [k for k, ch in self.col_checks.items() if ch.isChecked()]

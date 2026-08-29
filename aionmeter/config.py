@@ -24,7 +24,7 @@ DEFAULTS: dict = {
     # --- что показывать ---
     "metric": "damage",          # damage | heal | taken
     "mode": "session",           # session (копится до очистки) | encounter (текущий бой)
-    "scope": "split",            # split (группа и остальные раздельно) | party | all
+    "scope": "all",              # показываем всех, кто наносил урон
     "hide_mobs": True,
     "merge_pets": True,          # урон питомцев приписывать владельцу
     "columns": ["dmg", "dps", "pct", "hits"],
@@ -46,6 +46,7 @@ DEFAULTS: dict = {
         "click_through": "Ctrl+Alt+T",
         "hide": "Ctrl+Alt+H",
         "copy": "Ctrl+Alt+C",
+        "pause": "Ctrl+Alt+P",
     },
 
     "poll_ms": 250,

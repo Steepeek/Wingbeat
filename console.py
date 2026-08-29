@@ -48,15 +48,11 @@ def render(snap: dict, health: str = "") -> str:
     out.append(head)
     out.append("-" * 78)
     out.append(f"{'#':<3}{'игрок':<22}{'всего':>9}{'DPS':>8}{'сред':>8}{'%':>6}{'уд.':>6}{'крит':>7}")
-    current = None
     for i, r in enumerate(snap["rows"], 1):
-        if snap.get("split") and r["section"] != current:
-            current = r["section"]
-            out.append({"party": "-- ГРУППА", "other": "-- ОСТАЛЬНЫЕ"}[current])
-        mark = "*" if r["is_self"] else (" " if r["section"] == "party" else "·")
+        mark = "*" if r["is_self"] else " "
         crit = f"{r['crit']:.0f}%" if r["crit"] is not None else "—"
         out.append(
-            f"{i:<3}{mark}{r['name'][:20]:<21}{fmt(r['total']):>9}{fmt(r['dps']):>8}"
+            f"{i:<3}{mark}{r['display'][:20]:<21}{fmt(r['total']):>9}{fmt(r['dps']):>8}"
             f"{fmt(r['avg']):>8}{r['pct']:>5.1f}%{r['hits']:>6}{crit:>7}"
         )
     if snap.get("hidden"):

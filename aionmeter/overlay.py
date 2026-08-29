@@ -1,18 +1,25 @@
 """Окно метра.
 
-По умолчанию это обычное непрозрачное приложение: сплошной фон, панель с
-кнопками, перетаскивается за любое свободное место. Прозрачность и режим
-«клик насквозь» включаются отдельно — они нужны, только когда окно висит
-поверх игры.
+Устройство простое и без сюрпризов:
 
-Управление вынесено на панель, а не спрятано в меню: переключатели метрики,
-режима счёта и состава — на виду и в один клик. Меню осталось для редкого.
+    ┌──────────────────────────────────────┐
+    │ [▶] [■] [⟲] [⧉] [⚙]            [×]  │  кнопки
+    │  Урон   Хил   Получено   02:14  101k │  вкладки + состояние
+    ├──────────────────────────────────────┤
+    │ 1  Weisti       37.9k  2 946/с  51%  │
+    │ 2  Steepeek     21.9k  1 697/с  30%  │  своя строка выделена
+    ├──────────────────────────────────────┤
+    │ опыт 1.5M · AP 129 · убито 3         │
+    └──────────────────────────────────────┘
 
-Что нужно от Windows, когда окно работает оверлеем:
+Показываем всех, кто наносил урон. Своя строка подсвечена полосой слева и
+цветом — этого достаточно, чтобы найти себя взглядом.
+
+Что нужно от Windows, когда окно работает поверх игры:
 
 * WS_EX_NOACTIVATE — окно не забирает фокус. Без этого клик по нему
   сворачивает игру в оконном полноэкранном режиме.
-* WS_EX_TRANSPARENT — мышь проходит сквозь окно.
+* WS_EX_TRANSPARENT — мышь проходит сквозь окно (режим «клик насквозь»).
 * Периодический SetWindowPos(HWND_TOPMOST) — игра сбрасывает чужой z-order
   при переключении фокуса, поэтому «поверх всех» приходится подтверждать.
 
@@ -27,7 +34,7 @@ from ctypes import wintypes
 
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer
 from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication,
-                           QIcon, QPainter, QPainterPath, QPen, QPixmap)
+                           QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygon)
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
 from . import hotkeys as hk
@@ -45,36 +52,34 @@ SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
 
 BG = QColor(19, 24, 30)
 BG_TRANSPARENT = QColor(16, 20, 26, 225)
-BG_BAR = QColor(28, 35, 44)
-BG_STATS = QColor(23, 29, 36)
-BG_TAB = QColor(44, 56, 68)
+BG_HEAD = QColor(27, 34, 42)
+BG_STRIP = QColor(23, 29, 36)
+BTN_BG = QColor(38, 48, 59)
+BTN_BG_HOVER = QColor(52, 65, 79)
+BTN_EDGE = QColor(255, 255, 255, 30)
 LINE = QColor(255, 255, 255, 28)
 LINE_STRONG = QColor(255, 255, 255, 46)
 TEXT = QColor(226, 232, 236)
-TEXT_DIM = QColor(139, 152, 163)
-TEXT_FAINT = QColor(104, 116, 127)
+TEXT_DIM = QColor(146, 158, 169)
+TEXT_FAINT = QColor(108, 120, 132)
 ACCENT = QColor(237, 165, 73)
-TEAL = QColor(70, 195, 180)
-BTN_HOVER = QColor(255, 255, 255, 24)
-BAR_SELF = QColor(237, 165, 73, 66)
-BAR_PARTY = QColor(70, 195, 180, 44)
-BAR_OTHER = QColor(150, 160, 175, 32)
-BAR_SKILL = QColor(120, 140, 165, 40)
+GREEN = QColor(96, 194, 128)
+RED = QColor(232, 106, 106)
+ROW_SELF_BG = QColor(237, 165, 73, 34)
+BAR_SELF = QColor(237, 165, 73, 92)
+BAR_OTHER = QColor(120, 150, 180, 52)
+BAR_SKILL = QColor(120, 140, 165, 44)
 
+METRIC_TABS = (("damage", "Урон"), ("heal", "Хил"), ("taken", "Получено"))
 METRIC_TITLE = {"damage": "Урон", "heal": "Хил", "taken": "Полученный урон"}
-METRIC_TABS = (("damage", "Урон"), ("heal", "Хил"), ("taken", "Получ."))
-SECTION_TITLE = {"party": "ГРУППА", "other": "ОСТАЛЬНЫЕ"}
-MODE_LABEL = {"session": "сессия", "encounter": "бой"}
-SCOPE_LABEL = {"split": "группа+все", "party": "группа", "all": "все"}
-SCOPE_CYCLE = ("split", "party", "all")
 
-BUTTONS = (
-    ("reset", "Очистить"),
-    ("copy", "Скопировать в буфер"),
+#: name, подпись под курсором
+TOOLBAR = (
+    ("start", "Старт"),
+    ("stop", "Стоп"),
+    ("clear", "Очистить"),
+    ("copy", "Скопировать в чат"),
     ("settings", "Настройки"),
-    ("through", "Клик насквозь"),
-    ("menu", "Ещё"),
-    ("close", "Выход"),
 )
 
 
@@ -104,9 +109,9 @@ def make_icon() -> QIcon:
 
 
 class Overlay(QWidget):
-    BAR_H = 28
-    STATS_H = 22
-    SECTION_H = 17
+    BTN = 28              # сторона квадратной кнопки
+    BAR_H = 38            # ряд кнопок
+    TAB_H = 28            # ряд вкладок и состояния
     FOOTER_H = 20
 
     def __init__(self, engine, cfg: dict, on_settings=None, on_quit=None):
@@ -115,13 +120,12 @@ class Overlay(QWidget):
         self.cfg = cfg
         self.on_settings = on_settings
         self.on_quit = on_quit
-        self.snapshot: dict = {"rows": [], "sections": [], "loot": {}, "total": 0,
-                               "duration": 0, "metric": cfg.get("metric", "damage"),
-                               "mode": cfg.get("mode", "session"), "stats": {}}
-        self.selected = ""             # чей разбор по скиллам раскрыт
+        self.snapshot: dict = {"rows": [], "loot": {}, "total": 0, "duration": 0,
+                               "metric": cfg.get("metric", "damage"), "stats": {}}
+        self.selected = ""
         self._drag: QPoint | None = None
         self._resizing = False
-        self._hot = ""                 # что под курсором
+        self._hot = ""
         self._hit: list[tuple[str, QRect]] = []
         self._row_rects: list[tuple[QRect, dict]] = []
         self.hotkeys: hk.HotkeyManager | None = None
@@ -136,7 +140,7 @@ class Overlay(QWidget):
 
         w = cfg["window"]
         self.setGeometry(w["x"], w["y"], w["w"], w["h"])
-        self.setMinimumSize(330, 140)
+        self.setMinimumSize(300, 150)
         self._apply_font()
         self._apply_translucency()
 
@@ -156,12 +160,8 @@ class Overlay(QWidget):
         self.setWindowOpacity(self.cfg.get("opacity", 1.0) if transparent else 1.0)
 
     def apply_appearance(self) -> None:
-        """Применяет смену прозрачности на лету.
-
-        WA_TranslucentBackground меняет тип нативного окна, поэтому его надо
-        пересоздать. Заодно может смениться HWND — значит стили и хоткеи
-        нужно навесить заново, иначе они останутся на мёртвом окне.
-        """
+        """Смена прозрачности меняет тип нативного окна, поэтому его надо
+        пересоздать, а стили и хоткеи навесить заново."""
         was_visible = self.isVisible()
         self.hide()
         self._apply_translucency()
@@ -175,16 +175,17 @@ class Overlay(QWidget):
     def _apply_font(self) -> None:
         size = self.cfg.get("font_size", 12)
         self.font_body = QFont("Segoe UI", size)
-        self.font_tab = QFont("Segoe UI", max(8, size - 1), QFont.DemiBold)
+        self.font_self = QFont("Segoe UI", size, QFont.DemiBold)
+        self.font_tab = QFont("Segoe UI", size, QFont.DemiBold)
         self.font_small = QFont("Segoe UI", max(7, size - 3))
         self.font_num = QFont("Consolas", size - 1)
         self.font_skill = QFont("Segoe UI", max(7, size - 3))
-        self.row_h = QFontMetrics(self.font_body).height() + 8
+        self.row_h = QFontMetrics(self.font_body).height() + 9
         self.skill_h = QFontMetrics(self.font_skill).height() + 3
 
     @property
     def head_h(self) -> int:
-        return self.BAR_H + self.STATS_H
+        return self.BAR_H + self.TAB_H
 
     @property
     def footer_h(self) -> int:
@@ -229,10 +230,11 @@ class Overlay(QWidget):
             self.hotkeys.unregister_all()
         self.hotkeys = hk.HotkeyManager(self.hwnd)
         binds = self.cfg.get("hotkeys", {})
-        self.hotkeys.register(binds.get("reset", ""), self.action_reset)
+        self.hotkeys.register(binds.get("reset", ""), self.action_clear)
         self.hotkeys.register(binds.get("click_through", ""), self.action_toggle_click)
         self.hotkeys.register(binds.get("hide", ""), self.action_toggle_hide)
         self.hotkeys.register(binds.get("copy", ""), self.action_copy)
+        self.hotkeys.register(binds.get("pause", ""), self.action_toggle_pause)
 
     def nativeEvent(self, event_type, message):
         if self.hotkeys is not None and event_type == b"windows_generic_MSG":
@@ -246,7 +248,19 @@ class Overlay(QWidget):
 
     # -- действия --
 
-    def action_reset(self) -> None:
+    def action_start(self) -> None:
+        self.engine.set_paused(False)
+        self._refresh()
+
+    def action_stop(self) -> None:
+        self.engine.set_paused(True)
+        self._refresh()
+
+    def action_toggle_pause(self) -> None:
+        self.engine.set_paused(not self.engine.paused)
+        self._refresh()
+
+    def action_clear(self) -> None:
         self.engine.reset()
         self.selected = ""
         self._refresh()
@@ -259,41 +273,23 @@ class Overlay(QWidget):
     def action_toggle_hide(self) -> None:
         self.setVisible(not self.isVisible())
 
-    def action_toggle_mode(self) -> None:
-        self.cfg["mode"] = "encounter" if self.cfg.get("mode") == "session" else "session"
-        self._refresh()
-
-    def action_cycle_scope(self) -> None:
-        cur = self.cfg.get("scope", "split")
-        idx = SCOPE_CYCLE.index(cur) if cur in SCOPE_CYCLE else 0
-        self.cfg["scope"] = SCOPE_CYCLE[(idx + 1) % len(SCOPE_CYCLE)]
-        self._refresh()
-
     def set_metric(self, metric: str) -> None:
         self.cfg["metric"] = metric
         self.selected = ""
         self._refresh()
 
-    def set_scope(self, scope: str) -> None:
-        self.cfg["scope"] = scope
-        self._refresh()
-
-    def _set_party(self, name: str, is_party: bool) -> None:
-        self.engine.meter.set_party(name, is_party)
-        self._refresh()
-
     def action_copy(self) -> None:
         """Строка для вставки в игровой чат (лимит около 255 символов)."""
         snap = self.snapshot
-        rows = [r for r in snap.get("rows", []) if r["section"] == "party"] \
-            or snap.get("rows", [])
+        rows = snap.get("rows", [])
         if not rows:
             return
-        head = METRIC_TITLE.get(snap.get("metric", "damage"), "Урон")
         dur = snap.get("duration", 0)
-        parts = [f"{head} {dur // 60}:{dur % 60:02d}:"]
+        parts = [f"{METRIC_TITLE.get(snap.get('metric', 'damage'), 'Урон')} "
+                 f"{dur // 60}:{dur % 60:02d}:"]
         for i, r in enumerate(rows[:8], 1):
-            parts.append(f"{i}.{r['name']} {fmt(r['total'])} ({fmt(r['avg'])}dps {r['pct']:.0f}%)")
+            parts.append(f"{i}.{r['display']} {fmt(r['total'])} "
+                         f"({fmt(r['avg'])}dps {r['pct']:.0f}%)")
         lines, line = [], ""
         for token in parts:
             if len(line) + len(token) + 1 > 250:
@@ -315,9 +311,8 @@ class Overlay(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        transparent = bool(self.cfg.get("transparent"))
 
-        if transparent:
+        if self.cfg.get("transparent"):
             path = QPainterPath()
             path.addRoundedRect(0, 0, w, h, 6, 6)
             p.fillPath(path, BG_TRANSPARENT)
@@ -328,8 +323,8 @@ class Overlay(QWidget):
 
         snap = self.snapshot
         self._hit = []
-        self._paint_bar(p, w, snap)
-        self._paint_stats(p, w, snap)
+        self._paint_toolbar(p, w, snap)
+        self._paint_tabs(p, w, snap)
 
         bottom = h - 4 - self.footer_h
         self._row_rects = []
@@ -338,18 +333,11 @@ class Overlay(QWidget):
         if not rows:
             p.setFont(self.font_small)
             p.setPen(TEXT_DIM)
-            msg = snap.get("error") or "ждём боевых событий…"
-            p.drawText(QRect(12, y + 10, w - 24, 46), Qt.AlignHCenter | Qt.TextWordWrap, msg)
+            msg = snap.get("error") or ("на паузе — нажмите «Старт»"
+                                        if snap.get("paused") else "ждём боевых событий…")
+            p.drawText(QRect(14, y + 12, w - 28, 48), Qt.AlignHCenter | Qt.TextWordWrap, msg)
         else:
-            split = snap.get("split") and len({r["section"] for r in rows}) > 1
-            current = None
             for i, r in enumerate(rows):
-                if split and r["section"] != current:
-                    if y + self.SECTION_H > bottom:
-                        break
-                    current = r["section"]
-                    self._paint_section(p, current, y, w, snap)
-                    y += self.SECTION_H
                 if y + self.row_h > bottom:
                     break
                 self._paint_row(p, i, r, y, w)
@@ -362,147 +350,162 @@ class Overlay(QWidget):
             self._paint_footer(p, w, h, snap)
         self._paint_grip(p, w, h)
 
-    # -- панель --
+    def _paint_toolbar(self, p: QPainter, w: int, snap: dict) -> None:
+        p.fillRect(QRect(0, 0, w, self.BAR_H), BG_HEAD)
+        paused = bool(snap.get("paused"))
+        top = (self.BAR_H - self.BTN) // 2
+        x = 6
+        for name, _label in TOOLBAR:
+            rect = QRect(x, top, self.BTN, self.BTN)
+            self._hit.append((f"btn:{name}", rect))
+            lit = (name == "start" and not paused) or (name == "stop" and paused)
+            self._paint_button(p, rect, name, hot=self._hot == f"btn:{name}", lit=lit)
+            x += self.BTN + 5
 
-    def _paint_bar(self, p: QPainter, w: int, snap: dict) -> None:
-        p.fillRect(QRect(0, 0, w, self.BAR_H), BG_BAR)
+        rect = QRect(w - 6 - self.BTN, top, self.BTN, self.BTN)
+        self._hit.append(("btn:close", rect))
+        self._paint_button(p, rect, "close", hot=self._hot == "btn:close")
+        rect = QRect(w - 11 - self.BTN * 2, top, self.BTN, self.BTN)
+        self._hit.append(("btn:menu", rect))
+        self._paint_button(p, rect, "menu", hot=self._hot == "btn:menu")
 
-        # вкладки метрик слева
+    def _paint_button(self, p: QPainter, rect: QRect, name: str,
+                      hot: bool = False, lit: bool = False) -> None:
+        p.setPen(Qt.NoPen)
+        p.setBrush(BTN_BG_HOVER if hot else BTN_BG)
+        p.drawRoundedRect(rect, 3, 3)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(BTN_EDGE, 1))
+        p.drawRoundedRect(rect, 3, 3)
+
+        colour = TEXT
+        if lit:
+            colour = GREEN if name == "start" else ACCENT
+        elif name == "close" and hot:
+            colour = RED
+        self._draw_icon(p, name, rect, colour)
+
+    def _draw_icon(self, p: QPainter, name: str, rect: QRect, colour: QColor) -> None:
+        """Значки рисуются примитивами, а не глифами шрифта: символы вроде
+        ⚙ и ↺ есть не во всех шрифтах и молча превращаются в квадратики."""
+        cx, cy = rect.center().x() + 1, rect.center().y() + 1
+        p.setPen(QPen(colour, 1.5))
+        p.setBrush(Qt.NoBrush)
+        if name == "start":
+            p.setBrush(colour)
+            p.setPen(Qt.NoPen)
+            p.drawPolygon(QPolygon([QPoint(cx - 3, cy - 6), QPoint(cx + 6, cy),
+                                    QPoint(cx - 3, cy + 6)]))
+        elif name == "stop":
+            p.setBrush(colour)
+            p.setPen(Qt.NoPen)
+            p.drawRect(QRect(cx - 5, cy - 5, 10, 10))
+        elif name == "clear":
+            p.drawArc(QRect(cx - 6, cy - 6, 12, 12), 50 * 16, 280 * 16)
+            p.drawLine(cx + 5, cy - 7, cx + 5, cy - 2)
+            p.drawLine(cx + 5, cy - 7, cx + 9, cy - 6)
+        elif name == "copy":
+            p.drawRect(QRect(cx - 6, cy - 6, 8, 8))
+            p.drawRect(QRect(cx - 2, cy - 2, 8, 8))
+        elif name == "settings":
+            # Три ползунка: на 28 пикселях читается лучше шестерёнки
+            p.setBrush(colour)
+            for i, (dy, knob) in enumerate(((-5, 2), (0, -2), (5, 4))):
+                p.drawLine(cx - 7, cy + dy, cx + 7, cy + dy)
+                p.setPen(Qt.NoPen)
+                p.drawRect(QRect(cx + knob - 1, cy + dy - 3, 3, 6))
+                p.setPen(QPen(colour, 1.5))
+            p.setBrush(Qt.NoBrush)
+        elif name == "menu":
+            for dy in (-4, 0, 4):
+                p.drawLine(cx - 6, cy + dy, cx + 6, cy + dy)
+        elif name == "close":
+            p.drawLine(cx - 5, cy - 5, cx + 5, cy + 5)
+            p.drawLine(cx + 5, cy - 5, cx - 5, cy + 5)
+
+    def _paint_tabs(self, p: QPainter, w: int, snap: dict) -> None:
+        top = self.BAR_H
+        if not self.cfg.get("transparent"):
+            p.fillRect(QRect(0, top, w, self.TAB_H), BG_STRIP)
+
         p.setFont(self.font_tab)
         fm = QFontMetrics(self.font_tab)
         cur = self.cfg.get("metric", "damage")
-        x = 5
+        x = 8
         for key, label in METRIC_TABS:
-            tw = fm.horizontalAdvance(label) + 16
-            rect = QRect(x, 3, tw, self.BAR_H - 6)
+            tw = fm.horizontalAdvance(label) + 14
+            rect = QRect(x, top, tw, self.TAB_H)
             self._hit.append((f"metric:{key}", rect))
             if key == cur:
-                p.fillRect(rect, BG_TAB)
                 p.setPen(ACCENT)
-            elif self._hot == f"metric:{key}":
-                p.fillRect(rect, BTN_HOVER)
-                p.setPen(TEXT)
+                p.drawText(rect, Qt.AlignCenter, label)
+                p.fillRect(QRect(x + 4, top + self.TAB_H - 3, tw - 8, 2), ACCENT)
             else:
-                p.setPen(TEXT_DIM)
-            p.drawText(rect, Qt.AlignCenter, label)
-            x += tw + 2
+                p.setPen(TEXT if self._hot == f"metric:{key}" else TEXT_FAINT)
+                p.drawText(rect, Qt.AlignCenter, label)
+            x += tw
 
-        # кнопки справа
-        size = self.BAR_H - 8
-        bx = w - 5 - size
-        for name, _tip in reversed(BUTTONS):
-            rect = QRect(bx, 4, size, size)
-            self._hit.append((f"btn:{name}", rect))
-            active = name == "through" and bool(self.cfg.get("click_through"))
-            if active:
-                p.fillRect(rect, BG_TAB)
-            elif self._hot == f"btn:{name}":
-                p.fillRect(rect, BTN_HOVER)
-            colour = ACCENT if active else (TEXT if self._hot == f"btn:{name}" else TEXT_DIM)
-            self._draw_icon(p, name, rect, colour)
-            bx -= size + 2
-
-        p.setPen(QPen(LINE, 1))
-        p.drawLine(0, self.BAR_H, w, self.BAR_H)
-
-    def _draw_icon(self, p: QPainter, name: str, rect: QRect, colour: QColor) -> None:
-        """Иконки рисуются примитивами, а не глифами шрифта: символы вроде
-        ⚙ и ↺ есть не во всех шрифтах и молча превращаются в квадратики."""
-        p.setPen(QPen(colour, 1.4))
-        cx, cy = rect.center().x() + 1, rect.center().y() + 1
-        if name == "close":
-            p.drawLine(cx - 4, cy - 4, cx + 4, cy + 4)
-            p.drawLine(cx + 4, cy - 4, cx - 4, cy + 4)
-        elif name == "menu":
-            for dy in (-4, 0, 4):
-                p.drawLine(cx - 5, cy + dy, cx + 5, cy + dy)
-        elif name == "reset":
-            p.drawArc(QRect(cx - 5, cy - 5, 10, 10), 45 * 16, 280 * 16)
-            p.drawLine(cx + 4, cy - 5, cx + 4, cy - 1)
-            p.drawLine(cx + 4, cy - 5, cx + 7, cy - 4)
-        elif name == "copy":
-            p.drawRect(QRect(cx - 5, cy - 5, 7, 7))
-            p.drawRect(QRect(cx - 2, cy - 2, 7, 7))
-        elif name == "settings":
-            p.drawEllipse(QPoint(cx, cy), 3, 3)
-            for dx, dy in ((0, -6), (0, 6), (-6, 0), (6, 0), (-4, -4), (4, 4)):
-                p.drawLine(cx + dx // 2, cy + dy // 2, cx + dx, cy + dy)
-        elif name == "through":
-            p.drawRect(QRect(cx - 5, cy - 5, 10, 10))
-            p.drawLine(cx - 2, cy, cx + 2, cy)
-
-    def _paint_stats(self, p: QPainter, w: int, snap: dict) -> None:
-        top = self.BAR_H
-        if not self.cfg.get("transparent"):
-            p.fillRect(QRect(0, top, w, self.STATS_H), BG_STATS)
-        p.setFont(self.font_small)
-        fm = QFontMetrics(self.font_small)
-
-        x = 6
-        for key, label, colour in (
-            ("mode", MODE_LABEL.get(snap.get("mode", "session"), "сессия"),
-             TEAL if snap.get("mode") == "session" else ACCENT),
-            ("scope", SCOPE_LABEL.get(self.cfg.get("scope", "split"), "группа+все"), TEXT_DIM),
-        ):
-            cw = fm.horizontalAdvance(label) + 12
-            rect = QRect(x, top + 3, cw, self.STATS_H - 6)
-            self._hit.append((f"chip:{key}", rect))
-            p.fillRect(rect, BTN_HOVER if self._hot == f"chip:{key}" else BG_TAB)
-            p.setPen(colour)
-            p.drawText(rect, Qt.AlignCenter, label)
-            x += cw + 4
-
-        dur = snap.get("duration", 0)
-        left = (f"{dur // 3600}:{dur // 60 % 60:02d}:{dur % 60:02d}" if dur >= 3600
-                else f"{dur // 60}:{dur % 60:02d}")
-        if snap.get("target"):
-            left += f" · {snap['target']}"
-        p.setPen(TEXT_FAINT)
-        total_w = QFontMetrics(self.font_num).horizontalAdvance(fmt(snap.get("total", 0))) + 16
-        p.drawText(x + 2, top + self.STATS_H - 7,
-                   fm.elidedText(left, Qt.ElideRight, max(20, w - x - total_w)))
-
+        # Справа — итог, слева от него состояние. Под курсором вместо
+        # состояния показываем название кнопки: подсказка без всплывашек.
         p.setFont(self.font_num)
+        total_text = fmt(snap.get("total", 0))
         p.setPen(ACCENT)
-        p.drawText(QRect(0, top, w - 8, self.STATS_H),
-                   Qt.AlignRight | Qt.AlignVCenter, fmt(snap.get("total", 0)))
-        p.setPen(QPen(LINE, 1))
-        p.drawLine(0, top + self.STATS_H, w, top + self.STATS_H)
+        p.drawText(QRect(0, top, w - 9, self.TAB_H),
+                   Qt.AlignRight | Qt.AlignVCenter, total_text)
+        total_w = QFontMetrics(self.font_num).horizontalAdvance(total_text) + 20
 
-    def _paint_section(self, p: QPainter, key: str, y: int, w: int, snap: dict) -> None:
+        hint = dict(TOOLBAR + (("menu", "Ещё"), ("close", "Выход"))).get(
+            self._hot.partition(":")[2] if self._hot.startswith("btn:") else "")
+        if hint:
+            status, colour = hint, TEXT
+        elif snap.get("paused"):
+            status, colour = "на паузе", ACCENT
+        else:
+            dur = snap.get("duration", 0)
+            status = (f"{dur // 3600}:{dur // 60 % 60:02d}:{dur % 60:02d}" if dur >= 3600
+                      else f"{dur // 60}:{dur % 60:02d}")
+            n = len(snap.get("rows", []))
+            if n:
+                status += f"   {n} {_plural(n, 'игрок', 'игрока', 'игроков')}"
+            colour = TEXT_FAINT
         p.setFont(self.font_small)
-        p.setPen(TEXT_FAINT)
-        title = SECTION_TITLE.get(key, key.upper())
-        p.drawText(10, y + self.SECTION_H - 5, title)
-        total = next((s["total"] for s in snap.get("sections", []) if s["key"] == key), 0)
-        p.drawText(QRect(0, y, w - 10, self.SECTION_H),
-                   Qt.AlignRight | Qt.AlignVCenter, fmt(total))
-        fm = QFontMetrics(self.font_small)
-        x0 = 12 + fm.horizontalAdvance(title)
+        p.setPen(colour)
+        fms = QFontMetrics(self.font_small)
+        p.drawText(QRect(x + 10, top, max(20, w - x - total_w - 10), self.TAB_H),
+                   Qt.AlignRight | Qt.AlignVCenter,
+                   fms.elidedText(status, Qt.ElideRight, max(20, w - x - total_w - 12)))
+
         p.setPen(QPen(LINE, 1))
-        p.drawLine(x0, y + self.SECTION_H - 8, w - 60, y + self.SECTION_H - 8)
+        p.drawLine(0, top + self.TAB_H, w, top + self.TAB_H)
 
     def _paint_row(self, p: QPainter, i: int, r: dict, y: int, w: int) -> None:
-        bar_w = int((w - 8) * max(0.0, min(1.0, r.get("bar", 0))))
-        colour = BAR_SELF if r["is_self"] else (BAR_PARTY if r["section"] == "party" else BAR_OTHER)
-        p.fillRect(QRect(4, y + 2, bar_w, self.row_h - 4), colour)
+        is_self = r["is_self"]
+        if is_self:
+            p.fillRect(QRect(1, y, w - 2, self.row_h), ROW_SELF_BG)
+
+        bar_w = int((w - 10) * max(0.0, min(1.0, r.get("bar", 0))))
+        p.fillRect(QRect(5, y + 2, bar_w, self.row_h - 4),
+                   BAR_SELF if is_self else BAR_OTHER)
+        if is_self:
+            p.fillRect(QRect(1, y, 3, self.row_h), ACCENT)      # полоса слева
         if self.selected == r["name"]:
             p.setPen(QPen(LINE_STRONG, 1))
-            p.drawRect(QRect(4, y + 2, w - 9, self.row_h - 4))
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(QRect(4, y + 1, w - 9, self.row_h - 3))
 
-        p.setFont(self.font_body)
-        p.setPen(ACCENT if r["is_self"] else TEXT)
+        p.setFont(self.font_self if is_self else self.font_body)
+        p.setPen(ACCENT if is_self else TEXT)
         cols_w = sum(cw for _k, cw in self._columns(w))
         fm = QFontMetrics(self.font_body)
         mark = "▾ " if self.selected == r["name"] else ""
-        name = fm.elidedText(f"{mark}{i + 1}. {r['name']}", Qt.ElideRight,
-                             max(60, w - 18 - cols_w))
-        p.drawText(9, y + self.row_h - 7, name)
+        name = fm.elidedText(f"{mark}{i + 1}  {r['display']}", Qt.ElideRight,
+                             max(60, w - 20 - cols_w))
+        p.drawText(11, y + self.row_h - 8, name)
 
         # Каждая колонка в своей ячейке, а не склейкой в строку: иначе числа
         # разной длины не выстраиваются по вертикали и таблицу не прочитать.
         p.setFont(self.font_num)
-        x = w - 9
+        x = w - 10
         for key, cell_w in reversed(self._columns(w)):
             x -= cell_w
             value = self._cell_text(key, r)
@@ -515,76 +518,69 @@ class Overlay(QWidget):
     def _paint_skills(self, p: QPainter, r: dict, y: int, w: int, bottom: int) -> int:
         """Разбор по скиллам для раскрытой строки.
 
-        Данные уже собираются агрегатором, показать их почти ничего не стоит.
-        У автоатак имени скилла в логе нет — они идут отдельной строкой.
+        У автоатак имени скилла в логе нет вовсе — они идут одной строкой.
         """
         skills = r.get("skills") or []
-        named = sum(v for _k, v in skills)
-        auto = max(0, r["total"] - named)
+        auto = max(0, r["total"] - sum(v for _k, v in skills))
         items = list(skills[:6])
         if auto > 0:
             items.append(("автоатака", auto))
         if not items:
-            items = [("нет разбивки по скиллам", 0)]
+            items = [("разбивки по скиллам нет", 0)]
         top = max((v for _k, v in items), default=1) or 1
 
         p.setFont(self.font_skill)
+        fm = QFontMetrics(self.font_skill)
         for label, value in items:
             if y + self.skill_h > bottom:
                 break
-            bw = int((w - 40) * value / top)
-            p.fillRect(QRect(24, y + 1, bw, self.skill_h - 2), BAR_SKILL)
+            p.fillRect(QRect(26, y + 1, int((w - 46) * value / top), self.skill_h - 2), BAR_SKILL)
             p.setPen(TEXT_DIM)
-            fm = QFontMetrics(self.font_skill)
-            p.drawText(28, y + self.skill_h - 4,
-                       fm.elidedText(label, Qt.ElideRight, int(w * 0.55)))
+            p.drawText(30, y + self.skill_h - 4,
+                       fm.elidedText(label, Qt.ElideRight, int(w * 0.52)))
             if value:
-                pct = 100.0 * value / (r["total"] or 1)
                 p.setPen(TEXT_FAINT)
-                p.drawText(QRect(0, y, w - 10, self.skill_h),
-                           Qt.AlignRight | Qt.AlignVCenter, f"{fmt(value)}   {pct:.0f}%")
+                p.drawText(QRect(0, y, w - 11, self.skill_h), Qt.AlignRight | Qt.AlignVCenter,
+                           f"{fmt(value)}   {100.0 * value / (r['total'] or 1):.0f}%")
             y += self.skill_h
         return y
 
     def _paint_footer(self, p: QPainter, w: int, h: int, snap: dict) -> None:
         top = h - self.FOOTER_H
         if not self.cfg.get("transparent"):
-            p.fillRect(QRect(0, top, w, self.FOOTER_H), BG_STATS)
+            p.fillRect(QRect(0, top, w, self.FOOTER_H), BG_STRIP)
         p.setPen(QPen(LINE, 1))
         p.drawLine(0, top, w, top)
 
         loot = snap.get("loot", {})
         parts = []
-        if loot.get("exp"):
-            parts.append(f"опыт {fmt(loot['exp'])}")
-        if loot.get("ap"):
-            parts.append(f"AP {fmt(loot['ap'])}")
-        if loot.get("kinah_in"):
-            parts.append(f"кинах {fmt(loot['kinah_in'])}")
+        for key, label in (("exp", "опыт"), ("ap", "AP"), ("kinah_in", "кинах")):
+            if loot.get(key):
+                parts.append(f"{label} {fmt(loot[key])}")
         if loot.get("kills"):
             parts.append(f"убито {loot['kills']}")
         if loot.get("pvp_kills"):
             parts.append(f"PvP {loot['pvp_kills']}")
-        if loot.get("deaths") or loot.get("pvp_deaths"):
-            parts.append(f"смертей {loot.get('deaths', 0) + loot.get('pvp_deaths', 0)}")
-        text = " · ".join(parts) or "добычи пока нет"
+        deaths = loot.get("deaths", 0) + loot.get("pvp_deaths", 0)
+        if deaths:
+            parts.append(f"смертей {deaths}")
 
         p.setFont(self.font_small)
         p.setPen(TEXT_FAINT)
         fm = QFontMetrics(self.font_small)
-        p.drawText(9, top + self.FOOTER_H - 6, fm.elidedText(text, Qt.ElideRight, w - 60))
-
+        p.drawText(11, top + self.FOOTER_H - 6,
+                   fm.elidedText(" · ".join(parts) or "добычи пока нет",
+                                 Qt.ElideRight, w - 70))
         stats = snap.get("stats", {})
         if stats.get("read"):
-            health = f"{stats.get('parsed', 0)}/{stats['read']}"
-            p.drawText(QRect(0, top, w - 9, self.FOOTER_H),
-                       Qt.AlignRight | Qt.AlignVCenter, health)
+            p.drawText(QRect(0, top, w - 11, self.FOOTER_H), Qt.AlignRight | Qt.AlignVCenter,
+                       f"{stats.get('parsed', 0)}/{stats['read']}")
 
     def _columns(self, w: int) -> list[tuple[str, int]]:
         share = {"dmg": 0.21, "dps": 0.19, "pct": 0.13, "hits": 0.16, "crit": 0.15}
         active = [c for c in self.cfg.get("columns", ["dmg", "dps", "pct"]) if c in share]
         order = [c for c in ("dmg", "dps", "pct", "hits", "crit") if c in active]
-        avail = w - 18
+        avail = w - 20
         return [(c, max(34, int(avail * share[c]))) for c in order]
 
     @staticmethod
@@ -592,7 +588,7 @@ class Overlay(QWidget):
         if key == "dmg":
             return fmt(r["total"])
         if key == "dps":
-            return fmt(r["dps"]) if r["dps"] >= 1 else "·"
+            return f"{fmt(r['dps'])}/с" if r["dps"] >= 1 else "·"
         if key == "pct":
             return f"{r['pct']:.0f}%"
         if key == "hits":
@@ -634,7 +630,6 @@ class Overlay(QWidget):
             return
         row = self._row_at(e.position())
         if row is not None:
-            # Клик по строке раскрывает разбор по скиллам
             self.selected = "" if self.selected == row["name"] else row["name"]
             self.update()
             return
@@ -648,23 +643,19 @@ class Overlay(QWidget):
         kind, _, value = hit.partition(":")
         if kind == "metric":
             self.set_metric(value)
-        elif kind == "chip" and value == "mode":
-            self.action_toggle_mode()
-        elif kind == "chip" and value == "scope":
-            self.action_cycle_scope()
-        elif kind == "btn":
-            if value == "reset":
-                self.action_reset()
-            elif value == "copy":
-                self.action_copy()
-            elif value == "settings" and self.on_settings:
-                self.on_settings()
-            elif value == "through":
-                self.action_toggle_click()
-            elif value == "menu":
-                self._show_menu(global_pos)
-            elif value == "close" and self.on_quit:
-                self.on_quit()
+            return
+        actions = {
+            "start": self.action_start,
+            "stop": self.action_stop,
+            "clear": self.action_clear,
+            "copy": self.action_copy,
+            "settings": lambda: self.on_settings and self.on_settings(),
+            "menu": lambda: self._show_menu(global_pos),
+            "close": lambda: self.on_quit and self.on_quit(),
+        }
+        action = actions.get(value)
+        if action:
+            action()
 
     def mouseMoveEvent(self, e) -> None:
         hot = self._hit_at(e.position())
@@ -700,44 +691,25 @@ class Overlay(QWidget):
         self.cfg["window"] = {"x": g.x(), "y": g.y(), "w": g.width(), "h": g.height()}
 
     def contextMenuEvent(self, e) -> None:
-        self._show_menu(e.globalPos(), self._row_at(e.pos()))
+        self._show_menu(e.globalPos())
 
-    def _show_menu(self, at, row: dict | None = None) -> None:
+    def _show_menu(self, at) -> None:
         menu = QMenu(self)
         menu.setStyleSheet(
             "QMenu{background:#141a21;color:#dfe6e8;border:1px solid #2a343c;padding:4px}"
-            "QMenu::item{padding:5px 22px 5px 12px}"
+            "QMenu::item{padding:6px 22px 6px 12px}"
             "QMenu::item:selected{background:#233040}"
             "QMenu::separator{height:1px;background:#2a343c;margin:4px 6px}"
         )
-        # Ростер строится по событиям входа, по строкам получения урона и по
-        # групповому чату. Дальнобойного согруппника, который не получает
-        # урона и молчит, так не поймать — поэтому даём правку руками.
-        if row is not None and row["name"] != "(периодический)":
-            name = row["name"]
-            if row["section"] == "party":
-                menu.addAction(f"{name}: убрать из группы",
-                               lambda _c=False, n=name: self._set_party(n, False))
-            else:
-                menu.addAction(f"{name}: считать согруппником",
-                               lambda _c=False, n=name: self._set_party(n, True))
-            menu.addSeparator()
-
-        scope = self.cfg.get("scope", "split")
-        for key, label in (("split", "Группа и остальные"), ("party", "Только группа"),
-                           ("all", "Все одним списком")):
-            act = QAction(label, self, checkable=True, checked=scope == key)
-            act.triggered.connect(lambda _c, k=key: self.set_scope(k))
-            menu.addAction(act)
-        menu.addSeparator()
-
-        for key, label in (("show_loot", "Строка добычи"),
+        for key, label in (("show_loot", "Показывать добычу внизу"),
+                           ("click_through", "Клик проходит насквозь"),
                            ("transparent", "Прозрачный фон"),
                            ("always_on_top", "Поверх всех окон")):
             act = QAction(label, self, checkable=True, checked=bool(self.cfg.get(key)))
             act.triggered.connect(lambda _c, k=key: self._toggle_cfg(k))
             menu.addAction(act)
         menu.addSeparator()
+        menu.addAction("Скрыть окно", self.action_toggle_hide)
         menu.addAction("Настройки…", lambda: self.on_settings and self.on_settings())
         menu.addAction("Выход", lambda: self.on_quit and self.on_quit())
         menu.exec(at)
@@ -746,6 +718,9 @@ class Overlay(QWidget):
         self.cfg[key] = not self.cfg.get(key)
         if key == "transparent":
             self.apply_appearance()
+        elif key == "click_through":
+            self.apply_window_flags()
+            self.update()
         else:
             self.update()
 
@@ -753,3 +728,15 @@ class Overlay(QWidget):
         area = QGuiApplication.primaryScreen().availableGeometry()
         if not area.intersects(self.geometry()):
             self.move(area.x() + 60, area.y() + 60)
+
+
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    n = abs(n) % 100
+    if 11 <= n <= 14:
+        return many
+    n %= 10
+    if n == 1:
+        return one
+    if 2 <= n <= 4:
+        return few
+    return many

@@ -28,7 +28,7 @@ class Engine:
         self.parsed = 0
         self.unknown = 0
         self._unknown_fh = None
-        self._pending = ""     # незакрытая логическая запись между чтениями
+        self.paused = False
 
     # -- управление --
 
@@ -69,16 +69,30 @@ class Engine:
             self._unknown_fh.close()
             self._unknown_fh = None
 
+    def set_paused(self, paused: bool) -> None:
+        """Пауза. Строки продолжаем вычитывать, но не считаем — иначе после
+        снятия паузы всё накопленное разом свалится в таблицу."""
+        self.paused = paused
+        self._publish()
+
     def reset(self) -> None:
         with self._lock:
             self.meter.reset()
-            # Пересобираем снимок сразу: иначе до следующего тика в окне висят
-            # старые цифры и кнопка выглядит как ненажатая.
+        # Пересобираем снимок сразу: иначе до следующего тика в окне висят
+        # старые цифры и кнопка выглядит как ненажатая.
+        self._publish()
+
+    def _publish(self) -> None:
+        with self._lock:
             snap = self.meter.snapshot()
-        snap["stats"] = {"read": self.read_lines, "parsed": self.parsed,
-                         "unknown": self.unknown,
-                         "rotations": self.tailer.rotations if self.tailer else 0}
+        snap["stats"] = {
+            "read": self.read_lines,
+            "parsed": self.parsed,
+            "unknown": self.unknown,
+            "rotations": self.tailer.rotations if self.tailer else 0,
+        }
         snap["error"] = self.error
+        snap["paused"] = self.paused
         self._snapshot = snap
 
     # -- фоновый цикл --
@@ -96,6 +110,10 @@ class Engine:
         if self.tailer is None:
             return
         raw_lines = self.tailer.read()
+        if raw_lines and self.paused:
+            # позицию в файле держим актуальной, но события не считаем
+            self.read_lines += len(raw_lines)
+            raw_lines = []
         if raw_lines:
             self.read_lines += len(raw_lines)
             text_lines = [b.decode(self.encoding, "replace") for b in raw_lines]
@@ -108,16 +126,7 @@ class Engine:
                     else:
                         self.parsed += 1
                         self.meter.feed(ev)
-        with self._lock:
-            snap = self.meter.snapshot()
-        snap["stats"] = {
-            "read": self.read_lines,
-            "parsed": self.parsed,
-            "unknown": self.unknown,
-            "rotations": self.tailer.rotations if self.tailer else 0,
-        }
-        snap["error"] = self.error
-        self._snapshot = snap
+        self._publish()
 
     def _log_unknown(self, body: str) -> None:
         """Нераспознанные строки — единственный способ заметить, что сервер
