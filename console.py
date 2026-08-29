@@ -38,7 +38,7 @@ def fmt(n: float) -> str:
 def render(snap: dict, health: str = "") -> str:
     out = []
     metric = {"damage": "УРОН", "heal": "ХИЛ", "taken": "ПОЛУЧЕНО"}[snap["metric"]]
-    head = f"{metric}   бой {snap['duration']}с"
+    head = f"{metric}   {'сессия' if snap.get('mode') == 'session' else 'бой'} {snap['duration']}с"
     if snap.get("target"):
         head += f"   цель: {snap['target']}"
     if snap.get("kills"):
@@ -48,8 +48,12 @@ def render(snap: dict, health: str = "") -> str:
     out.append(head)
     out.append("-" * 78)
     out.append(f"{'#':<3}{'игрок':<22}{'всего':>9}{'DPS':>8}{'сред':>8}{'%':>6}{'уд.':>6}{'крит':>7}")
+    current = None
     for i, r in enumerate(snap["rows"], 1):
-        mark = "*" if r["is_self"] else (" " if r["is_party"] else "·")
+        if snap.get("split") and r["section"] != current:
+            current = r["section"]
+            out.append({"party": "-- ГРУППА", "other": "-- ОСТАЛЬНЫЕ"}[current])
+        mark = "*" if r["is_self"] else (" " if r["section"] == "party" else "·")
         crit = f"{r['crit']:.0f}%" if r["crit"] is not None else "—"
         out.append(
             f"{i:<3}{mark}{r['name'][:20]:<21}{fmt(r['total']):>9}{fmt(r['dps']):>8}"
@@ -67,7 +71,8 @@ def render(snap: dict, health: str = "") -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true", help="разобрать весь лог и выйти")
-    ap.add_argument("--scope", choices=["party", "all"])
+    ap.add_argument("--scope", choices=["split", "party", "all"])
+    ap.add_argument("--mode", choices=["session", "encounter"])
     ap.add_argument("--metric", choices=["damage", "heal", "taken"])
     ap.add_argument("--log", help="путь к Chat.log")
     args = ap.parse_args()
@@ -79,6 +84,8 @@ def main() -> int:
         cfg["scope"] = args.scope
     if args.metric:
         cfg["metric"] = args.metric
+    if args.mode:
+        cfg["mode"] = args.mode
 
     if not cfgmod.resolve_log_path(cfg):
         print("Ищу Chat.log…", flush=True)

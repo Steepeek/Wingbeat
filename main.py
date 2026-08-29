@@ -37,6 +37,7 @@ class App:
 
         self._build_tray()
         self._start_or_configure()
+        self._warn_hotkeys()
 
     # -- трей нужен, потому что при включённом «клик насквозь»
     #    по самому оверлею кликнуть уже нельзя --
@@ -46,7 +47,7 @@ class App:
         self.tray.setToolTip("AionMeter")
         menu = QMenu()
         menu.addAction("Показать / скрыть", self.overlay.action_toggle_hide)
-        menu.addAction("Сбросить бой", self.overlay.action_reset)
+        menu.addAction("Очистить", self.overlay.action_reset)
         menu.addAction("Клик насквозь", self.overlay.action_toggle_click)
         menu.addSeparator()
         menu.addAction("Настройки…", self.open_settings)
@@ -56,6 +57,18 @@ class App:
             lambda reason: self.overlay.action_toggle_hide()
             if reason == QSystemTrayIcon.Trigger else None)
         self.tray.show()
+
+    def _warn_hotkeys(self) -> None:
+        """Занятое сочетание не срабатывает молча — про это надо сказать сразу,
+        а не оставлять человека гадать, почему кнопка не работает."""
+        failed = self.overlay.hotkeys.failed if self.overlay.hotkeys else []
+        if failed:
+            self.tray.showMessage(
+                "AionMeter",
+                "Сочетания уже заняты другой программой и работать не будут: "
+                + ", ".join(failed)
+                + ". Поменяйте их в настройках — или пользуйтесь кнопками в шапке.",
+                QSystemTrayIcon.Information, 7000)
 
     # -- запуск --
 
@@ -83,11 +96,7 @@ class App:
             self.engine.stop()
             dlg.apply_to(self.cfg)
             cfgmod.save(self.cfg)
-            self.overlay.setWindowOpacity(self.cfg["opacity"])
-            self.overlay._apply_font()
-            self.overlay.apply_window_flags()
-            self.overlay.setup_hotkeys()
-            self.overlay.update()
+            self.overlay.apply_appearance()   # прозрачность меняет нативное окно
 
             self.engine = Engine(self.cfg)
             self.overlay.engine = self.engine

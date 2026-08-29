@@ -23,18 +23,20 @@ DEFAULTS: dict = {
 
     # --- что показывать ---
     "metric": "damage",          # damage | heal | taken
-    "scope": "party",            # party (я + группа + мои петы) | all
+    "mode": "session",           # session (копится до очистки) | encounter (текущий бой)
+    "scope": "split",            # split (группа и остальные раздельно) | party | all
     "hide_mobs": True,
     "merge_pets": True,          # урон питомцев приписывать владельцу
     "columns": ["dmg", "dps", "pct", "hits"],
     "max_rows": 12,
 
     # --- внешний вид ---
-    "opacity": 0.88,
+    "transparent": False,        # сквозная прозрачность фона (для оверлея поверх игры)
+    "opacity": 1.0,
     "font_size": 12,
     "click_through": False,
     "always_on_top": True,
-    "window": {"x": 80, "y": 80, "w": 320, "h": 240},
+    "window": {"x": 80, "y": 80, "w": 360, "h": 300},
 
     # --- хоткеи (пусто = выключен) ---
     "hotkeys": {
@@ -45,7 +47,7 @@ DEFAULTS: dict = {
     },
 
     "poll_ms": 250,
-    "backfill_kb": 256,          # сколько хвоста лога читать при старте
+    "backfill_kb": 64,           # сколько хвоста лога читать при старте
 }
 
 

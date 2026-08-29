@@ -126,15 +126,18 @@ class SettingsDialog(QDialog):
             "это нормальная скорость атаки, поэтому ниже 5 с ставить не стоит."))
 
         self.cb_scope = QComboBox()
+        self.cb_scope.addItem("Группа и остальные — раздельно", "split")
         self.cb_scope.addItem("Только группа, я и мои петы", "party")
-        self.cb_scope.addItem("Все, кого видно", "all")
-        self.cb_scope.setCurrentIndex(0 if self.cfg.get("scope") == "party" else 1)
+        self.cb_scope.addItem("Все одним списком", "all")
+        idx = self.cb_scope.findData(self.cfg.get("scope", "split"))
+        self.cb_scope.setCurrentIndex(max(0, idx))
         form.addRow("Кого показывать", self.cb_scope)
         form.addRow("", self._hint(
-            "Отличить согруппника от постороннего по строке урона нельзя — "
-            "текст одинаковый. Состав группы ведётся по входам и выходам, "
-            "поэтому если запустить метр уже в группе, её надо пересобрать "
-            "или переключиться на «все»."))
+            "Доля и длина полосы считаются внутри своей секции: сравнивать себя "
+            "осмысленно с согруппниками, а не с посторонним фармером рядом. "
+            "Состав группы ведётся по событиям входа и выхода, поэтому если "
+            "запустить метр, уже находясь в группе, он её не увидит — "
+            "пересоберите группу или смотрите «все одним списком»."))
 
         self.ch_mobs = QCheckBox("Скрывать мобов и тех, кто бьёт нас")
         self.ch_mobs.setChecked(self.cfg.get("hide_mobs", True))
@@ -156,6 +159,17 @@ class SettingsDialog(QDialog):
         self.cb_metric.setCurrentIndex(max(0, idx))
         form.addRow("Показывать", self.cb_metric)
 
+        self.cb_mode = QComboBox()
+        self.cb_mode.addItem("Копить до очистки", "session")
+        self.cb_mode.addItem("Только текущий бой", "encounter")
+        idx = self.cb_mode.findData(self.cfg.get("mode", "session"))
+        self.cb_mode.setCurrentIndex(max(0, idx))
+        form.addRow("Режим счёта", self.cb_mode)
+        form.addRow("", self._hint(
+            "«Копить» — цифры держатся, пока не нажать очистку (кнопка в шапке "
+            "или Ctrl+Alt+R). «Только текущий бой» — таблица сама обнуляется "
+            "между боями."))
+
         box = QGroupBox("Колонки")
         grid = QGridLayout(box)
         self.col_checks = {}
@@ -166,6 +180,13 @@ class SettingsDialog(QDialog):
             self.col_checks[key] = ch
             grid.addWidget(ch, i // 3, i % 3)
         form.addRow(box)
+
+        self.ch_transparent = QCheckBox("Прозрачный фон (режим оверлея)")
+        self.ch_transparent.setChecked(self.cfg.get("transparent", False))
+        form.addRow("", self.ch_transparent)
+        form.addRow("", self._hint(
+            "По умолчанию окно обычное, непрозрачное. Прозрачность нужна, "
+            "только когда метр висит прямо поверх игры."))
 
         self.sl_opacity = QSlider(Qt.Horizontal)
         self.sl_opacity.setRange(30, 100)
@@ -178,6 +199,7 @@ class SettingsDialog(QDialog):
         holder = QWidget()
         holder.setLayout(row)
         form.addRow("Непрозрачность", holder)
+        form.addRow("", self._hint("Действует только при включённом прозрачном фоне."))
 
         self.sp_font = self._spin(8, 22, self.cfg.get("font_size", 12), " px")
         form.addRow("Размер шрифта", self.sp_font)
@@ -281,6 +303,8 @@ class SettingsDialog(QDialog):
         cfg["hide_mobs"] = self.ch_mobs.isChecked()
         cfg["merge_pets"] = self.ch_pets.isChecked()
         cfg["metric"] = self.cb_metric.currentData()
+        cfg["mode"] = self.cb_mode.currentData()
+        cfg["transparent"] = self.ch_transparent.isChecked()
         cfg["columns"] = [k for k, ch in self.col_checks.items() if ch.isChecked()]
         cfg["opacity"] = self.sl_opacity.value() / 100
         cfg["font_size"] = self.sp_font.value()

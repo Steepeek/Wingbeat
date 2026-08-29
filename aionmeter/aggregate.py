@@ -22,6 +22,12 @@ from .parser import SELF
 
 DAMAGE, HEAL, TAKEN = "damage", "heal", "taken"
 
+#: Периодический урон: владельца эффекта в строке лога физически нет.
+UNATTRIBUTED = "(периодический)"
+
+#: Названия группового канала чата в разных локализациях клиента.
+PARTY_CHANNELS = {"Group", "Party", "Группа", "Gruppe", "Groupe", "Grupo"}
+
 
 @dataclass
 class Actor:
@@ -110,6 +116,15 @@ class Meter:
         self.cfg = cfg
         self.self_name = cfg.get("self_name") or ""
         self.party: set[str] = set()
+        # Ростер, достроенный из боя. Строка "X received N damage from Y"
+        # существует в клиенте ТОЛЬКО для согруппников и своих петов
+        # (STR_MSG_COMBAT_PARTY_ENEMY_ATTACK), у посторонних такого шаблона
+        # нет вовсе. Это позволяет узнать группу, даже если метр запустили,
+        # когда группа уже собрана и событий входа он не видел.
+        self.party_seen: set[str] = set()
+        #: Ручная правка ростера из меню: последнее слово всегда за человеком.
+        self.party_manual: set[str] = set()
+        self.party_excluded: set[str] = set()
         self.pets: set[str] = set()
         self.mobs: set[str] = set()
         self.hostiles: set[str] = set()
@@ -128,6 +143,17 @@ class Meter:
         self.encounter = None
         self.session = Encounter(0, self.cfg)
         self.pending_close = 0
+
+    def set_party(self, name: str, is_party: bool) -> None:
+        """Ручное отнесение игрока к группе или к посторонним."""
+        if is_party:
+            self.party_manual.add(name)
+            self.party_excluded.discard(name)
+        else:
+            self.party_excluded.add(name)
+            self.party_manual.discard(name)
+            self.party.discard(name)
+            self.party_seen.discard(name)
 
     def _add(self, metric: str, name: str, ts: int, amount: int,
              crit: bool, skill: str) -> None:
@@ -180,8 +206,10 @@ class Meter:
                 self.party.add(ev.target)
             elif ev.extra == "leave":
                 self.party.discard(ev.target)
+                self.party_seen.discard(ev.target)
             elif ev.extra == "disband":
                 self.party.clear()
+                self.party_seen.clear()
             return
 
         if kind == "summon":
@@ -192,13 +220,17 @@ class Meter:
             return
 
         if kind == "chat":
-            if not self.cfg.get("self_name") and not self.self_name and ev.actor:
-                # Собственная реплика идёт без обёртки [charname:] — этого хватает.
-                self.self_name = ev.actor
+            if ev.target == SELF:
+                if not self.cfg.get("self_name") and not self.self_name and ev.actor:
+                    # Своя реплика идёт без обёртки [charname:] — этого хватает.
+                    self.self_name = ev.actor
+            elif ev.extra in PARTY_CHANNELS and ev.actor:
+                self.party_seen.add(ev.actor)
             return
 
         if kind == "xp":
             self.mobs.add(ev.target)
+            self.session.kills.append(ev.target)
             enc = self.encounter
             if enc is not None:
                 enc.kills.append(ev.target)
@@ -219,9 +251,10 @@ class Meter:
             if ev.amount <= 0:
                 return
             self._ensure(ev.ts).targets[ev.target] += ev.amount
+            self.session.targets[ev.target] += ev.amount
             # Владельца эффекта в строке физически нет — отдельной строкой,
             # а не размазываем молча по игрокам.
-            self._add(DAMAGE, "(периодический)", ev.ts, ev.amount, False, "")
+            self._add(DAMAGE, UNATTRIBUTED, ev.ts, ev.amount, False, "")
             return
 
         if kind != "damage" or ev.amount <= 0:
@@ -231,6 +264,8 @@ class Meter:
             # Кто-то получил урон. Атакующего запоминаем как враждебного.
             if ev.actor:
                 self.hostiles.add(ev.actor)
+            if ev.target != SELF and ev.target not in self.pets:
+                self.party_seen.add(ev.target)
             self._add(TAKEN, self._owner(ev.target), ev.ts, ev.amount, ev.crit, ev.skill)
             return
 
@@ -242,6 +277,7 @@ class Meter:
 
         enc = self._ensure(ev.ts)
         enc.targets[ev.target] += ev.amount
+        self.session.targets[ev.target] += ev.amount
         self._maybe_split_on_target(enc, ev)
         self._add(DAMAGE, self._owner(ev.actor), ev.ts, ev.amount, ev.crit, ev.skill)
 
@@ -257,18 +293,33 @@ class Meter:
 
     # -- вывод --
 
-    def visible(self, name: str) -> bool:
-        if name == "(периодический)":
-            return True
-        if self.cfg.get("scope") == "party":
-            return name == SELF or name in self.party or name in self.pets
-        if self.cfg.get("hide_mobs", True):
-            return name not in self.mobs and name not in self.hostiles
-        return True
+    def section_of(self, name: str) -> str | None:
+        """В какую секцию попадает актор: 'party', 'other' или None (скрыть).
 
-    def snapshot(self, metric: str | None = None, whole: bool = False) -> dict:
+        Своих (себя, петов и согруппников) держим отдельно от посторонних:
+        по строке урона они неотличимы, но ростер группы мы ведём сами, и
+        мешать в одну таблицу свою группу и случайных людей рядом бесполезно.
+        """
+        scope = self.cfg.get("scope", "split")
+        if name == SELF or name in self.pets or (self.self_name and name == self.self_name):
+            return "party"
+        if name in self.party_excluded:
+            return None if scope == "party" else "other"
+        if name in self.party or name in self.party_seen or name in self.party_manual:
+            return "party"
+        if scope == "party":
+            return None
+        if name == UNATTRIBUTED:
+            return "other"
+        if self.cfg.get("hide_mobs", True) and (name in self.mobs or name in self.hostiles):
+            return None
+        return "other"
+
+    def snapshot(self, metric: str | None = None, whole: bool | None = None) -> dict:
         cfg = self.cfg
         metric = metric or cfg.get("metric", DAMAGE)
+        if whole is None:
+            whole = cfg.get("mode", "session") == "session"
         enc = self.session if whole else self.encounter
         window = cfg["dps_window"]
         now = self.last_ts
@@ -276,41 +327,59 @@ class Meter:
         rows = []
         if enc is not None:
             for name, a in enc.actors[metric].items():
-                if not self.visible(name):
+                section = self.section_of(name)
+                if section is None:
                     continue
                 rows.append({
                     "name": name,
+                    "section": section,
                     "total": a.total,
                     "dps": a.dps_now(now, window),
                     "avg": a.avg_dps,
                     "hits": a.hits,
                     "crit": a.crit_pct,
                     "max": a.max_hit,
-                    "is_self": name == SELF or name == self.self_name,
+                    "is_self": name == SELF or (bool(self.self_name) and name == self.self_name),
                     "is_party": name in self.party,
                     "top_skill": a.skills.most_common(1)[0][0] if a.skills else "",
                 })
 
-        total = sum(r["total"] for r in rows) or 1
-        # Три ключа сортировки: иначе строки прыгают при равенстве
-        rows.sort(key=lambda r: (-r["total"], -r["hits"], r["name"]))
-        top = rows[0]["total"] if rows else 1
-        for r in rows:
-            r["pct"] = 100.0 * r["total"] / total
-            r["bar"] = r["total"] / (top or 1)   # полоса нормируется на лидера
+        # Сортировка: сначала своя группа, внутри — по урону.
+        # Три ключа, иначе строки прыгают местами при равенстве.
+        order = {"party": 0, "other": 1}
+        rows.sort(key=lambda r: (order[r["section"]], -r["total"], -r["hits"], r["name"]))
+
+        # Доля и длина полосы считаются ВНУТРИ секции: сравнивать себя
+        # осмысленно с согруппниками, а не с посторонним фармером рядом.
+        sections = []
+        for key in ("party", "other"):
+            part = [r for r in rows if r["section"] == key]
+            if not part:
+                continue
+            sec_total = sum(r["total"] for r in part) or 1
+            top = part[0]["total"] or 1
+            for r in part:
+                r["pct"] = 100.0 * r["total"] / sec_total
+                r["bar"] = r["total"] / top
+            sections.append({"key": key, "total": sec_total, "count": len(part)})
 
         limit = cfg.get("max_rows", 12)
+        shown = rows[:limit]
         return {
-            "rows": rows[:limit],
+            "rows": shown,
+            "sections": sections,
+            "split": cfg.get("scope", "split") == "split",
             "hidden": max(0, len(rows) - limit),
-            "total": total if rows else 0,
-            "duration": enc.duration if enc else 0,
+            "total": sum(r["total"] for r in rows),
+            "duration": enc.duration if enc and enc.start else 0,
             "target": enc.dominant if enc else "",
             "kills": len(enc.kills) if enc else 0,
             "window": window,
             "metric": metric,
+            "mode": "session" if whole else "encounter",
             "self_name": self.self_name,
-            "party": sorted(self.party),
+            "party": sorted((self.party | self.party_seen | self.party_manual)
+                            - self.party_excluded),
             "active": enc is not None,
             "stats": dict(self.stats),
         }

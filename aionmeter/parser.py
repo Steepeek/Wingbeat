@@ -134,7 +134,8 @@ RE_UNSUMMON = re.compile(r"^(?:You unsummon (?P<pet>.+?)|(?P<pet2>.+?) has been 
 # Это самый надёжный способ узнать свой ник:
 #   чужие:  [3.LFG] [charname:Zuzia;1.0 0.69 0.69]: текст
 #   своя:   [3.LFG] Steepeek: текст
-RE_OWN_CHAT = re.compile(r"^\[\d+\.[^\]]+\] (?P<me>[^\[\]:;]{1,24}): ")
+RE_OWN_CHAT = re.compile(r"^\[\d+\.(?P<chan>[^\]]+)\] (?P<me>[^\[\]:;]{1,24}): ")
+RE_OTHER_CHAT = re.compile(r"^\[\d+\.(?P<chan>[^\]]+)\] \[charname:(?P<who>[^;\]]{1,24});")
 
 # Запасной способ: строка при входе в игру.
 RE_GLORY = re.compile(
@@ -217,7 +218,11 @@ def parse(ts: str, body: str) -> Event | None:
     if body[0] == "[":
         m = RE_OWN_CHAT.match(body)
         if m:
-            return Event("chat", ts_to_epoch(ts), actor=m["me"])
+            return Event("chat", ts_to_epoch(ts), actor=m["me"],
+                         extra=m["chan"], target=SELF)
+        m = RE_OTHER_CHAT.match(body)
+        if m:
+            return Event("chat", ts_to_epoch(ts), actor=m["who"], extra=m["chan"])
         return None
 
     m = RE_HIT.match(body)

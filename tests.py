@@ -99,8 +99,10 @@ check("своя реплика в чате => свой ник", (e.kind, e.actor
 
 print("парсер: защита от подделки и мусора")
 
-check("чужая реплика с текстом под событие урона",
-      P("[3.LFG] [charname:Spoofer;1.0 0.6 0.6]: Tamiiko inflicted 999999 damage on X."), None)
+# Чужая реплика распознаётся как чат (нужно для канала группы), но НЕ как урон
+spoof = P("[3.LFG] [charname:Spoofer;1.0 0.6 0.6]: Tamiiko inflicted 999999 damage on X.")
+check("подделка урона через чат не становится уроном",
+      (spoof.kind, spoof.actor, spoof.extra, spoof.amount), ("chat", "Spoofer", "LFG", 0))
 check("реплика в say-канале",
       P("Spoofer: Tamiiko inflicted 999999 damage on X."), None)
 check("крит-префикс на не-уроне",
@@ -143,13 +145,15 @@ check("доля одного актора = 100%", round(row["pct"]), 100)
 m2 = Meter(dict(cfg))
 m2.feed(parse("2026.08.29 19:00:00", "Aaa inflicted 100 damage on Dummy."))
 m2.feed(parse("2026.08.29 19:05:00", "Aaa inflicted 100 damage on Dummy."))
-check("пауза 5 минут разрывает бой", m2.snapshot(DAMAGE)["rows"][0]["total"], 100)
+check("пауза 5 минут разрывает бой", m2.snapshot(DAMAGE, whole=False)["rows"][0]["total"], 100)
+check("в режиме сессии обе части складываются", m2.snapshot(DAMAGE, whole=True)["rows"][0]["total"], 200)
 
 m3 = Meter(dict(cfg))
 m3.feed(parse("2026.08.29 19:00:00", "Aaa inflicted 100 damage on Dummy."))
 m3.feed(parse("2026.08.29 19:00:01", "You have gained 500 XP from Dummy."))
 m3.feed(parse("2026.08.29 19:00:09", "Aaa inflicted 700 damage on Other."))
-check("смерть цели закрывает бой (с добором DoT)", m3.snapshot(DAMAGE)["rows"][0]["total"], 700)
+check("смерть цели закрывает бой (с добором DoT)",
+      m3.snapshot(DAMAGE, whole=False)["rows"][0]["total"], 700)
 
 m4 = Meter(dict(cfg))
 m4.feed(parse("2026.08.29 19:00:00", "Weisti has joined your group."))
@@ -158,6 +162,89 @@ m4.feed(parse("2026.08.29 19:00:01", "Rando inflicted 999 damage on Dummy."))
 m4.cfg["scope"] = "party"
 names = [r["name"] for r in m4.snapshot(DAMAGE)["rows"]]
 check("scope=party скрывает посторонних", names, ["Weisti"])
+
+print("агрегатор: секции группа/остальные")
+
+m5 = Meter(dict(DEFAULTS))
+m5.cfg["scope"] = "split"
+m5.feed(parse("2026.08.29 19:00:00", "Weisti has joined your group."))
+m5.feed(parse("2026.08.29 19:00:01", "You inflicted 300 damage on Dummy."))
+m5.feed(parse("2026.08.29 19:00:01", "Weisti inflicted 100 damage on Dummy."))
+m5.feed(parse("2026.08.29 19:00:01", "Rando inflicted 900 damage on Dummy."))
+m5.feed(parse("2026.08.29 19:00:01", "Farmer inflicted 100 damage on Dummy."))
+snap5 = m5.snapshot(DAMAGE)
+check("посторонние не пропадают, а идут отдельной секцией",
+      [(r["name"], r["section"]) for r in snap5["rows"]],
+      [("You", "party"), ("Weisti", "party"), ("Rando", "other"), ("Farmer", "other")])
+check("доля считается ВНУТРИ секции, а не от общего итога",
+      [round(r["pct"]) for r in snap5["rows"]], [75, 25, 90, 10])
+check("полоса нормируется на лидера своей секции",
+      [round(r["bar"], 2) for r in snap5["rows"]], [1.0, 0.33, 1.0, 0.11])
+check("итог в шапке — по всем видимым", snap5["total"], 1400)
+check("секции описаны в снимке",
+      [(s_["key"], s_["total"]) for s_ in snap5["sections"]],
+      [("party", 400), ("other", 1000)])
+
+m5.cfg["scope"] = "all"
+check("scope=all кладёт всех в одну секцию",
+      {r["section"] for r in m5.snapshot(DAMAGE)["rows"]}, {"other", "party"})
+
+m6 = Meter(dict(DEFAULTS))
+m6.cfg["scope"] = "split"
+m6.feed(parse("2026.08.29 19:00:00", "Mob Guard inflicted 500 damage on You."))
+m6.feed(parse("2026.08.29 19:00:01", "Mob Guard inflicted 500 damage on Dummy."))
+check("тот, кто бьёт нас, в таблицу урона не попадает",
+      [r["name"] for r in m6.snapshot(DAMAGE)["rows"]], [])
+check("но попадает в метрику полученного урона",
+      [r["name"] for r in m6.snapshot("taken")["rows"]], ["You"])
+
+print("агрегатор: достройка ростера без событий входа")
+
+# Метр часто запускают, когда группа УЖЕ собрана: событий "has joined" не было.
+m8 = Meter(dict(DEFAULTS))
+m8.cfg["scope"] = "split"
+m8.feed(parse("2026.08.29 19:00:00", "Ally inflicted 500 damage on Mob."))
+check("до подсказки согруппник числится посторонним",
+      m8.snapshot(DAMAGE)["rows"][0]["section"], "other")
+# Шаблон "X received N damage from Y" в клиенте существует ТОЛЬКО для группы
+m8.feed(parse("2026.08.29 19:00:02", "Ally received 200 damage from Mob."))
+check("строка получения урона выдаёт согруппника",
+      m8.snapshot(DAMAGE)["rows"][0]["section"], "party")
+
+m9 = Meter(dict(DEFAULTS))
+m9.cfg["scope"] = "split"
+m9.feed(parse("2026.08.29 19:00:00", "Buddy inflicted 500 damage on Mob."))
+m9.feed(parse("2026.08.29 19:00:01", "[1.Group] [charname:Buddy;1.0 1.0 1.0]: го дальше"))
+check("реплика в групповом канале выдаёт согруппника",
+      m9.snapshot(DAMAGE)["rows"][0]["section"], "party")
+m9.feed(parse("2026.08.29 19:00:02", "Buddy has left your group."))
+check("выход из группы убирает и достроенного",
+      m9.snapshot(DAMAGE)["rows"][0]["section"], "other")
+
+m10 = Meter(dict(DEFAULTS))
+m10.feed(parse("2026.08.29 19:00:00", "[3.LFG] [charname:Rando;1.0 1.0 1.0]: wts"))
+check("обычный канал согруппником не делает", sorted(m10.party_seen), [])
+
+m11 = Meter(dict(DEFAULTS))
+m11.cfg["scope"] = "split"
+m11.feed(parse("2026.08.29 19:00:00", "Sniper inflicted 500 damage on Mob."))
+m11.set_party("Sniper", True)
+check("ручное отнесение к группе", m11.snapshot(DAMAGE)["rows"][0]["section"], "party")
+m11.feed(parse("2026.08.29 19:00:01", "Sniper received 100 damage from Mob."))
+m11.set_party("Sniper", False)
+check("ручное исключение сильнее автоматики",
+      m11.snapshot(DAMAGE)["rows"][0]["section"], "other")
+
+print("агрегатор: очистка")
+
+m7 = Meter(dict(DEFAULTS))
+m7.cfg["scope"] = "all"
+m7.feed(parse("2026.08.29 19:00:00", "Aaa inflicted 100 damage on Dummy."))
+check("до очистки данные есть", len(m7.snapshot(DAMAGE)["rows"]), 1)
+m7.reset()
+check("после очистки таблица пуста", m7.snapshot(DAMAGE)["rows"], [])
+m7.feed(parse("2026.08.29 19:00:20", "Aaa inflicted 700 damage on Dummy."))
+check("после очистки счёт идёт заново", m7.snapshot(DAMAGE)["rows"][0]["total"], 700)
 
 # --------------------------------------------------------------- tail
 
