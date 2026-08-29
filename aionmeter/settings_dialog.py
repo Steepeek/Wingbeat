@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
 
 from . import config as cfgmod
+from . import skilldb
 
 STYLE = """
 QDialog, QWidget { background:#161b21; color:#dfe6e8; font-family:'Segoe UI'; font-size:13px; }
@@ -96,6 +97,21 @@ class SettingsDialog(QDialog):
         self.cb_enc.addItems(["auto", "cp1251", "utf-8", "cp1252"])
         self.cb_enc.setCurrentText(self.cfg.get("encoding", "auto"))
         form.addRow("Кодировка лога", self.cb_enc)
+
+        self.lbl_db = QLabel()
+        self.btn_db = QPushButton("Собрать из клиента")
+        self.btn_db.clicked.connect(self._build_db)
+        row_db = QHBoxLayout()
+        row_db.addWidget(self.lbl_db, 1)
+        row_db.addWidget(self.btn_db)
+        holder_db = QWidget()
+        holder_db.setLayout(row_db)
+        self._refresh_db_label()
+        form.addRow("База классов", holder_db)
+        form.addRow("", self._hint(
+            "Класс персонажа в лог не пишется, но имена скиллов у классов не "
+            "пересекаются. Таблица собирается из вашей же установки игры "
+            "(L10N/<язык>/data/data.pak) и никуда не отправляется."))
 
         self.ed_self = QLineEdit(self.cfg.get("self_name", ""))
         self.ed_self.setPlaceholderText("оставьте пустым — определится само")
@@ -236,6 +252,21 @@ class SettingsDialog(QDialog):
         lab.setProperty("hint", "1")
         lab.setWordWrap(True)
         return lab
+
+    def _refresh_db_label(self) -> None:
+        n = len(skilldb.load())
+        self.lbl_db.setText(f"собрана, {n} скиллов" if n else "не собрана")
+        self.lbl_db.setProperty("hint", "1")
+
+    def _build_db(self) -> None:
+        log = self.ed_log.text().strip()
+        game_dir = str(Path(log).parent) if log else self.cfg.get("game_dir", "")
+        try:
+            skilldb.save(skilldb.build(game_dir))
+        except Exception as e:                      # noqa: BLE001
+            self.lbl_db.setText(f"не вышло: {e}")
+            return
+        self._refresh_db_label()
 
     def _browse(self) -> None:
         start = self.ed_log.text() or str(Path.home())

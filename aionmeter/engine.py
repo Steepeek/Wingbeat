@@ -10,6 +10,7 @@ from . import config as cfgmod
 from .aggregate import Meter
 from .parser import RE_GLORY, RE_OWN_CHAT, iter_records, parse
 from .tailer import Tailer
+from . import skilldb
 
 
 class Engine:
@@ -52,6 +53,8 @@ class Engine:
             except OSError:
                 enc = "cp1251"
         self.encoding = enc
+
+        self.meter.skill_class = skilldb.ensure(self.cfg.get("game_dir", ""))
 
         if not self.cfg.get("self_name"):
             found = self._detect_self_name(path)
@@ -202,6 +205,7 @@ def load_history(cfg: dict, on_progress=None) -> Meter:
     if enc == "auto":
         enc = cfgmod.detect_encoding(raw[-65536:])
     meter = Meter(cfg)
+    meter.skill_class = skilldb.ensure(cfg.get("game_dir", ""))
     lines = raw.decode(enc, "replace").split("\r\n")
     n = 0
     for ts, body in iter_records(lines):

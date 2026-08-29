@@ -38,6 +38,7 @@ from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
 from . import hotkeys as hk
+from . import skilldb
 
 IS_WINDOWS = hasattr(ctypes, "windll")
 
@@ -68,6 +69,24 @@ RED = QColor(232, 106, 106)
 ROW_SELF_BG = QColor(237, 165, 73, 34)
 BAR_SELF = QColor(237, 165, 73, 92)
 BAR_OTHER = QColor(120, 150, 180, 52)
+#: Полупрозрачные версии цветов классов для полос
+_CLASS_BAR: dict[str, QColor] = {}
+
+
+def class_colour(code: str, alpha: int = 255) -> QColor | None:
+    """Цвет класса или None, если класс не определён."""
+    if not code:
+        return None
+    key = (code, alpha)
+    c = _CLASS_BAR.get(key)
+    if c is None:
+        hexrgb = skilldb.COLOURS.get(code)
+        if not hexrgb:
+            return None
+        c = QColor(hexrgb)
+        c.setAlpha(alpha)
+        _CLASS_BAR[key] = c
+    return c
 BAR_SKILL = QColor(120, 140, 165, 44)
 
 METRIC_TABS = (("damage", "Урон"), ("heal", "Хил"), ("taken", "Получено"))
@@ -484,8 +503,11 @@ class Overlay(QWidget):
             p.fillRect(QRect(1, y, w - 2, self.row_h), ROW_SELF_BG)
 
         bar_w = int((w - 10) * max(0.0, min(1.0, r.get("bar", 0))))
-        p.fillRect(QRect(5, y + 2, bar_w, self.row_h - 4),
-                   BAR_SELF if is_self else BAR_OTHER)
+        # Цвет полосы = цвет класса: строку узнаёшь по цвету, не читая имя.
+        colour = class_colour(r.get("cls", ""), 90 if is_self else 64)
+        if colour is None:
+            colour = BAR_SELF if is_self else BAR_OTHER
+        p.fillRect(QRect(5, y + 2, bar_w, self.row_h - 4), colour)
         if is_self:
             p.fillRect(QRect(1, y, 3, self.row_h), ACCENT)      # полоса слева
         if self.selected == r["name"]:
@@ -493,14 +515,28 @@ class Overlay(QWidget):
             p.setBrush(Qt.NoBrush)
             p.drawRect(QRect(4, y + 1, w - 9, self.row_h - 3))
 
-        p.setFont(self.font_self if is_self else self.font_body)
+        # Своя строка набрана полужирным, поэтому и мерить её надо тем же
+        # шрифтом — иначе метка класса налезает на ник.
+        font = self.font_self if is_self else self.font_body
+        p.setFont(font)
         p.setPen(ACCENT if is_self else TEXT)
         cols_w = sum(cw for _k, cw in self._columns(w))
-        fm = QFontMetrics(self.font_body)
+        fm = QFontMetrics(font)
         mark = "▾ " if self.selected == r["name"] else ""
         name = fm.elidedText(f"{mark}{i + 1}  {r['display']}", Qt.ElideRight,
                              max(60, w - 20 - cols_w))
         p.drawText(11, y + self.row_h - 8, name)
+        # Метка класса сразу за именем, тем же цветом, что и полоса
+        cls_colour = class_colour(r.get("cls", ""))
+        if cls_colour and r.get("cls_name"):
+            x_cls = 13 + fm.horizontalAdvance(name)
+            room = w - 20 - cols_w - x_cls
+            if room > 30:
+                p.setFont(self.font_small)
+                p.setPen(cls_colour)
+                p.drawText(x_cls, y + self.row_h - 8,
+                           QFontMetrics(self.font_small).elidedText(
+                               r["cls_name"], Qt.ElideRight, room))
 
         # Каждая колонка в своей ячейке, а не склейкой в строку: иначе числа
         # разной длины не выстраиваются по вертикали и таблицу не прочитать.

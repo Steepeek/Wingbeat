@@ -18,6 +18,7 @@ from aionmeter.aggregate import DAMAGE, Meter
 from aionmeter.config import DEFAULTS
 from aionmeter.parser import iter_records, parse, to_int
 from aionmeter.tailer import Tailer
+from aionmeter import skilldb
 
 NBSP = " "
 ok = 0
@@ -312,6 +313,28 @@ m16.feed(parse("2026.08.29 19:00:01", "You inflicted 100 damage on Mob."))
 row16 = m16.snapshot(DAMAGE)["rows"][0]
 check("в таблице показывается ник, а не «You»",
       (row16["name"], row16["display"], row16["is_self"]), ("You", "Steepeek", True))
+
+print("агрегатор: класс по скиллам")
+
+m17 = Meter(dict(DEFAULTS))
+m17.cfg["scope"] = "all"
+m17.skill_class = {"Gale Arrow VII": "RA", "Deadshot V": "RA",
+                   "Freezing Wind IV": "WI", "Body Smash IV": "FI"}
+m17.feed(parse("2026.08.29 19:00:00", "Ann inflicted 100 damage on Mob by using Gale Arrow VII."))
+m17.feed(parse("2026.08.29 19:00:01", "Ann inflicted 100 damage on Mob by using Deadshot V."))
+m17.feed(parse("2026.08.29 19:00:01", "Bob inflicted 200 damage on Mob by using Freezing Wind IV."))
+m17.feed(parse("2026.08.29 19:00:02", "Cid inflicted 300 damage on Mob."))
+by_name = {r["display"]: r for r in m17.snapshot(DAMAGE)["rows"]}
+check("класс по скиллам", by_name["Ann"]["cls_name"], "Рейнджер")
+check("другой класс у другого игрока", by_name["Bob"]["cls_name"], "Волшебник")
+check("без скиллов класса нет", by_name["Cid"]["cls_name"], "")
+check("код класса тоже в снимке", by_name["Ann"]["cls"], "RA")
+check("у каждого класса есть цвет",
+      sorted(skilldb.CLASSES) == sorted(skilldb.COLOURS), True)
+
+m18 = Meter(dict(DEFAULTS))
+m18.cfg["scope"] = "all"
+check("без базы класс не выдумывается", m18.actor_class("Ann"), "")
 
 print("агрегатор: очистка")
 

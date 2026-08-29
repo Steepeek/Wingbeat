@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
+from . import skilldb
 from .parser import SELF
 
 DAMAGE, HEAL, TAKEN = "damage", "heal", "taken"
@@ -136,6 +137,10 @@ class Meter:
         self.stats = Counter()
         #: Добыча за сессию: опыт, AP, кинах, убийства, смерти.
         self.loot: Counter = Counter()
+        #: Скилл -> код класса. Собирается из клиента, может быть пустой.
+        self.skill_class: dict[str, str] = {}
+        #: Голоса за класс по каждому актору: скиллы у классов не пересекаются.
+        self.class_votes: dict[str, Counter] = {}
         #: Ник подтверждён однозначной строкой, а не эвристикой.
         self.self_confirmed = bool(cfg.get("self_name"))
         self._own_chat: Counter = Counter()
@@ -149,6 +154,11 @@ class Meter:
         self.session = Encounter(0, self.cfg)
         self.loot.clear()
         self.pending_close = 0
+
+    def actor_class(self, name: str) -> str:
+        """Код класса по использованным скиллам или '' если не определён."""
+        votes = self.class_votes.get(name)
+        return votes.most_common(1)[0][0] if votes else ""
 
     def set_party(self, name: str, is_party: bool) -> None:
         """Ручное отнесение игрока к группе или к посторонним."""
@@ -306,6 +316,11 @@ class Meter:
             self._add(TAKEN, self._owner(ev.target), ev.ts, ev.amount, ev.crit, ev.skill)
             return
 
+        if ev.skill and self.skill_class:
+            code = self.skill_class.get(ev.skill)
+            if code:
+                self.class_votes.setdefault(ev.actor, Counter())[code] += 1
+
         enc = self._ensure(ev.ts)
         enc.targets[ev.target] += ev.amount
         self.session.targets[ev.target] += ev.amount
@@ -364,9 +379,12 @@ class Meter:
                 # В боевых строках свой персонаж всегда "You" — в таблице
                 # показываем настоящий ник, если он уже известен.
                 display = self.self_name if (name == SELF and self.self_name) else name
+                cls = self.actor_class(name)
                 rows.append({
                     "name": name,
                     "display": display,
+                    "cls": cls,
+                    "cls_name": skilldb.CLASSES.get(cls, ""),
                     "section": section,
                     "total": a.total,
                     "dps": a.dps_now(now, window),
