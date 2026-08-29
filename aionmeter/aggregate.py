@@ -136,6 +136,9 @@ class Meter:
         self.stats = Counter()
         #: Добыча за сессию: опыт, AP, кинах, убийства, смерти.
         self.loot: Counter = Counter()
+        #: Ник подтверждён однозначной строкой, а не эвристикой.
+        self.self_confirmed = bool(cfg.get("self_name"))
+        self._own_chat: Counter = Counter()
 
     # -- служебное --
 
@@ -223,10 +226,20 @@ class Meter:
             return
 
         if kind == "chat":
-            if ev.target == SELF:
-                if not self.cfg.get("self_name") and not self.self_name and ev.actor:
-                    # Своя реплика идёт без обёртки [charname:] — этого хватает.
-                    self.self_name = ev.actor
+            if self.cfg.get("self_name"):
+                return
+            if ev.extra == "glory" and ev.actor:
+                # Единственная строка, где свой ник стоит однозначно.
+                self.self_name = ev.actor
+                self.self_confirmed = True
+            elif ev.target == SELF and ev.actor and not self.self_confirmed:
+                # Реплика без обёртки [charname:] — признак СЛАБЫЙ: у чужих
+                # такие строки тоже встречаются. Берём только явно
+                # преобладающее имя, иначе подхватим случайного человека.
+                self._own_chat[ev.actor] += 1
+                top = self._own_chat.most_common(2)
+                if top[0][1] >= 3 and (len(top) == 1 or top[0][1] >= 2 * top[1][1]):
+                    self.self_name = top[0][0]
             elif ev.extra in PARTY_CHANNELS and ev.actor:
                 self.party_seen.add(ev.actor)
             return

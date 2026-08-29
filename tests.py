@@ -281,6 +281,38 @@ check("автоатаки в разбор скиллов не попадают (
 m13.reset()
 check("очистка обнуляет и добычу", m13.snapshot(DAMAGE)["loot"], {})
 
+print("агрегатор: определение своего ника")
+
+# Реплика без обёртки [charname:] — признак СЛАБЫЙ: у чужих такие строки
+# в логе тоже встречаются (проверено на живом логе: 11 своих против 11 чужих
+# от разных людей по одной штуке).
+m14 = Meter(dict(DEFAULTS))
+m14.feed(parse("2026.08.29 19:00:00", "[3.LFG] Rando: wts stuff"))
+check("одна чужая реплика ник не задаёт", m14.self_name, "")
+for i in range(3):
+    m14.feed(parse(f"2026.08.29 19:00:1{i}", "[3.LFG] Steepeek: SR DECK"))
+check("преобладающее имя принимается", m14.self_name, "Steepeek")
+check("но помечается как неподтверждённое", m14.self_confirmed, False)
+
+m15 = Meter(dict(DEFAULTS))
+m15.feed(parse("2026.08.29 19:00:00", "[3.LFG] Rando: wts stuff"))
+m15.feed(parse("2026.08.29 19:00:01",
+               "The Glory Points to be deducted for Steepeek are 28."))
+check("строка Glory Points задаёт ник однозначно",
+      (m15.self_name, m15.self_confirmed), ("Steepeek", True))
+for i in range(5):
+    m15.feed(parse(f"2026.08.29 19:00:2{i}", "[3.LFG] Impostor: hi"))
+check("подтверждённый ник эвристикой не перебивается", m15.self_name, "Steepeek")
+
+m16 = Meter(dict(DEFAULTS))
+m16.cfg["scope"] = "all"
+m16.feed(parse("2026.08.29 19:00:00",
+               "The Glory Points to be deducted for Steepeek are 28."))
+m16.feed(parse("2026.08.29 19:00:01", "You inflicted 100 damage on Mob."))
+row16 = m16.snapshot(DAMAGE)["rows"][0]
+check("в таблице показывается ник, а не «You»",
+      (row16["name"], row16["display"], row16["is_self"]), ("You", "Steepeek", True))
+
 print("агрегатор: очистка")
 
 m7 = Meter(dict(DEFAULTS))

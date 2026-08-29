@@ -8,7 +8,7 @@ from pathlib import Path
 
 from . import config as cfgmod
 from .aggregate import Meter
-from .parser import iter_records, parse
+from .parser import RE_GLORY, RE_OWN_CHAT, iter_records, parse
 from .tailer import Tailer
 
 
@@ -53,6 +53,11 @@ class Engine:
                 enc = "cp1251"
         self.encoding = enc
 
+        if not self.cfg.get("self_name"):
+            found = self._detect_self_name(path)
+            if found:
+                self.meter.self_name = found
+
         self.error = ""
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name="AionMeter-read", daemon=True)
@@ -94,6 +99,39 @@ class Engine:
         snap["error"] = self.error
         snap["paused"] = self.paused
         self._snapshot = snap
+
+    def _detect_self_name(self, path: str, tail_bytes: int = 4 * 1024 * 1024) -> str:
+        """Свой ник из хвоста лога.
+
+        В боевых строках персонаж всегда «You», поэтому ник берём оттуда, где
+        он есть: собственная реплика в чате идёт БЕЗ обёртки [charname:]
+        (у чужих она всегда есть), плюс строка про Glory Points при входе.
+        Ждать, пока человек что-нибудь напишет, незачем — смотрим сразу.
+        """
+        try:
+            with open(path, "rb") as f:
+                size = f.seek(0, 2)
+                f.seek(max(0, size - tail_bytes))
+                chunk = f.read()
+        except OSError:
+            return ""
+        lines = chunk.decode(self.encoding, "replace").split("\r\n")
+
+        from collections import Counter
+        own = Counter()
+        for ts, body in iter_records(lines):
+            m = RE_GLORY.match(body)
+            if m:
+                return m["me"]            # однозначно: строка при входе в игру
+            m = RE_OWN_CHAT.match(body)
+            if m:
+                own[m["me"]] += 1
+        # Реплика без обёртки [charname:] — признак слабый, у чужих такие
+        # строки тоже бывают. Берём имя, только если оно явно преобладает.
+        top = own.most_common(2)
+        if top and top[0][1] >= 3 and (len(top) == 1 or top[0][1] >= 2 * top[1][1]):
+            return top[0][0]
+        return ""
 
     # -- фоновый цикл --
 
