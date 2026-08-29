@@ -181,6 +181,21 @@ class SettingsDialog(QDialog):
             "далее. Программа иконок не содержит и не скачивает — это art NCSoft. "
             "Кнопка «Найти набор» поищет уже установленные наборы на диске."))
 
+        self.ed_skill_icons = QLineEdit(self.cfg.get("skill_icons_dir", ""))
+        self.ed_skill_icons.setPlaceholderText("пусто — без иконок скиллов")
+        btn_si = QPushButton("Обзор…")
+        btn_si.clicked.connect(self._browse_skill_icons)
+        row_si = QHBoxLayout()
+        row_si.addWidget(self.ed_skill_icons, 1)
+        row_si.addWidget(btn_si)
+        holder_si = QWidget()
+        holder_si.setLayout(row_si)
+        form.addRow("Иконки скиллов", holder_si)
+        form.addRow("", self._hint(
+            "Показываются в разборе по скиллам. Папку наполняет отдельная "
+            "утилита tools/fetch_skill_icons.py — её надо запустить руками. "
+            "Сам метр в сеть не ходит."))
+
         self.ch_loot = QCheckBox("Строка добычи внизу (опыт, AP, кинах, убийства)")
         self.ch_loot.setChecked(self.cfg.get("show_loot", True))
         form.addRow("", self.ch_loot)
@@ -288,6 +303,12 @@ class SettingsDialog(QDialog):
                 return
         self.ed_icons.setPlaceholderText("наборов не найдено — укажите папку вручную")
 
+    def _browse_skill_icons(self) -> None:
+        start = self.ed_skill_icons.text() or str(cfgmod.config_dir())
+        path = QFileDialog.getExistingDirectory(self, "Папка с иконками скиллов", start)
+        if path:
+            self.ed_skill_icons.setText(path)
+
     def _refresh_db_label(self) -> None:
         n = len(skilldb.load())
         self.lbl_db.setText(f"собрана, {n} скиллов" if n else "не собрана")
@@ -342,6 +363,7 @@ class SettingsDialog(QDialog):
         cfg["transparent"] = self.ch_transparent.isChecked()
         cfg["show_loot"] = self.ch_loot.isChecked()
         cfg["icons_dir"] = self.ed_icons.text().strip()
+        cfg["skill_icons_dir"] = self.ed_skill_icons.text().strip()
         cfg["columns"] = [k for k, ch in self.col_checks.items() if ch.isChecked()]
         cfg["opacity"] = self.sl_opacity.value() / 100
         cfg["font_size"] = self.sp_font.value()

@@ -347,6 +347,22 @@ m18 = Meter(dict(DEFAULTS))
 m18.cfg["scope"] = "all"
 check("без базы класс не выдумывается", m18.actor_class("Ann"), "")
 
+print("утилита иконок: варианты рангов")
+
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location(
+    "fetch_icons", Path(__file__).parent / "tools" / "fetch_skill_icons.py")
+_fi = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_fi)
+
+check("откат идёт от своего ранга вниз",
+      _fi.rank_variants("Gale Arrow IV"),
+      ["Gale Arrow IV", "Gale Arrow III", "Gale Arrow II", "Gale Arrow I", "Gale Arrow"])
+check("скилл без ранга не разбирается",
+      _fi.rank_variants("Accurate Hit"), ["Accurate Hit"])
+check("первый ранг откатывается только к имени без ранга",
+      _fi.rank_variants("Ambush I"), ["Ambush I", "Ambush"])
+
 print("агрегатор: очистка")
 
 m7 = Meter(dict(DEFAULTS))

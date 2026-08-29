@@ -7,3 +7,8 @@ dist/
 venv/
 .idea/
 .vscode/
+
+# скачанные иконки — art NCSoft, в репозиторий не кладём
+skillicons/
+icons/
+*.gif

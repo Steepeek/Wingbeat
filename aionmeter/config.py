@@ -29,7 +29,8 @@ DEFAULTS: dict = {
     "merge_pets": True,          # урон питомцев приписывать владельцу
     "columns": ["dmg", "dps", "pct", "hits"],
     "max_rows": 12,
-    "icons_dir": "",             # папка с PNG иконок классов; пусто = без иконок
+    "icons_dir": "",             # папка с иконками классов; пусто = без иконок
+    "skill_icons_dir": "",       # папка с иконками скиллов (см. tools/fetch_skill_icons.py)
     "show_loot": True,          # строка внизу: опыт, AP, кинах, убийства
 
 

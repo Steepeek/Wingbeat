@@ -117,6 +117,30 @@ def class_icon(icons_dir: str, code: str, size: int):
     return pm
 
 
+def skill_icon(icons_dir: str, name: str, size: int):
+    """Иконка скилла из локальной папки или None.
+
+    Папку наполняет отдельная утилита tools/fetch_skill_icons.py, запускаемая
+    руками. Сам метр в сеть не ходит.
+    """
+    if not icons_dir or not name:
+        return None
+    key = (icons_dir, "skill:" + name, size)
+    if key in _ICON_CACHE:
+        return _ICON_CACHE[key]
+    pm = None
+    for ext in _ICON_EXT:
+        f = Path(icons_dir) / (name + ext)
+        if f.is_file():
+            loaded = QPixmap(str(f))
+            if not loaded.isNull():
+                pm = loaded.scaled(size, size, Qt.KeepAspectRatio,
+                                   Qt.SmoothTransformation)
+            break
+    _ICON_CACHE[key] = pm
+    return pm
+
+
 def class_colour(code: str, alpha: int = 255) -> QColor | None:
     """Цвет класса или None, если класс не определён."""
     if not code:
@@ -619,12 +643,19 @@ class Overlay(QWidget):
 
         p.setFont(self.font_skill)
         fm = QFontMetrics(self.font_skill)
+        icons_dir = self.cfg.get("skill_icons_dir", "")
+        icon_size = self.skill_h - 2
         for label, value in items:
             if y + self.skill_h > bottom:
                 break
             p.fillRect(QRect(26, y + 1, int((w - 46) * value / top), self.skill_h - 2), BAR_SKILL)
+            icon = skill_icon(icons_dir, label, icon_size)
+            x_label = 30
+            if icon is not None:
+                p.drawPixmap(28, y + 1, icon)
+                x_label = 30 + icon.width()
             p.setPen(TEXT_DIM)
-            p.drawText(30, y + self.skill_h - 4,
+            p.drawText(x_label, y + self.skill_h - 4,
                        fm.elidedText(label, Qt.ElideRight, int(w * 0.52)))
             if value:
                 p.setPen(TEXT_FAINT)
