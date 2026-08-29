@@ -163,6 +163,24 @@ class SettingsDialog(QDialog):
         self.cb_metric.setCurrentIndex(max(0, idx))
         form.addRow("Показывать", self.cb_metric)
 
+        self.ed_icons = QLineEdit(self.cfg.get("icons_dir", ""))
+        self.ed_icons.setPlaceholderText("пусто — без иконок, только цвет класса")
+        btn_icons = QPushButton("Обзор…")
+        btn_icons.clicked.connect(self._browse_icons)
+        btn_auto = QPushButton("Найти набор")
+        btn_auto.clicked.connect(self._autodetect_icons)
+        row_ic = QHBoxLayout()
+        row_ic.addWidget(self.ed_icons, 1)
+        row_ic.addWidget(btn_icons)
+        row_ic.addWidget(btn_auto)
+        holder_ic = QWidget()
+        holder_ic.setLayout(row_ic)
+        form.addRow("Иконки классов", holder_ic)
+        form.addRow("", self._hint(
+            "Папка с PNG по имени класса: Ranger.png, Sorc.png, Cleric.png и так "
+            "далее. Программа иконок не содержит и не скачивает — это art NCSoft. "
+            "Кнопка «Найти набор» поищет уже установленные наборы на диске."))
+
         self.ch_loot = QCheckBox("Строка добычи внизу (опыт, AP, кинах, убийства)")
         self.ch_loot.setChecked(self.cfg.get("show_loot", True))
         form.addRow("", self.ch_loot)
@@ -253,6 +271,23 @@ class SettingsDialog(QDialog):
         lab.setWordWrap(True)
         return lab
 
+    def _browse_icons(self) -> None:
+        start = self.ed_icons.text() or str(Path.home())
+        path = QFileDialog.getExistingDirectory(self, "Папка с иконками классов", start)
+        if path:
+            self.ed_icons.setText(path)
+
+    def _autodetect_icons(self) -> None:
+        """Ищет уже установленные наборы иконок в известных местах."""
+        import os
+        appdata = os.environ.get("APPDATA", "")
+        for candidate in (Path(appdata) / "Aion Rainmeter" / "UI" / "defaulticons",
+                          Path(appdata) / "AionMeter" / "icons"):
+            if candidate.is_dir() and any(candidate.glob("*.png")):
+                self.ed_icons.setText(str(candidate))
+                return
+        self.ed_icons.setPlaceholderText("наборов не найдено — укажите папку вручную")
+
     def _refresh_db_label(self) -> None:
         n = len(skilldb.load())
         self.lbl_db.setText(f"собрана, {n} скиллов" if n else "не собрана")
@@ -306,6 +341,7 @@ class SettingsDialog(QDialog):
         cfg["metric"] = self.cb_metric.currentData()
         cfg["transparent"] = self.ch_transparent.isChecked()
         cfg["show_loot"] = self.ch_loot.isChecked()
+        cfg["icons_dir"] = self.ed_icons.text().strip()
         cfg["columns"] = [k for k, ch in self.col_checks.items() if ch.isChecked()]
         cfg["opacity"] = self.sl_opacity.value() / 100
         cfg["font_size"] = self.sp_font.value()

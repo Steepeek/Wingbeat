@@ -331,6 +331,17 @@ check("без скиллов класса нет", by_name["Cid"]["cls_name"], "
 check("код класса тоже в снимке", by_name["Ann"]["cls"], "RA")
 check("у каждого класса есть цвет",
       sorted(skilldb.CLASSES) == sorted(skilldb.COLOURS), True)
+check("у каждого класса есть имена файлов иконок",
+      sorted(skilldb.CLASSES) == sorted(skilldb.ICON_ALIASES), True)
+check("код класса всегда первый кандидат имени файла",
+      skilldb.icon_candidates("RA")[0], "ra")
+check("псевдонимы имён файлов — кортеж, а не строка",
+      all(isinstance(v, tuple) for v in skilldb.ICON_ALIASES.values()), True)
+# имена набора, который чаще всего оказывается у людей на диске
+_arm = {"glad", "templar", "sin", "ranger", "sorc", "sm",
+        "cleric", "chanter", "bard", "gunner", "aethertech"}
+check("типовой набор имён покрывает все классы",
+      all(_arm & set(skilldb.icon_candidates(c)) for c in skilldb.CLASSES), True)
 
 m18 = Meter(dict(DEFAULTS))
 m18.cfg["scope"] = "all"

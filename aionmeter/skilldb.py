@@ -53,6 +53,31 @@ COLOURS: dict[str, str] = {
     "RI": "#8fa3b8",
 }
 
+#: Имена файлов иконок, под которыми класс встречается у разных наборов.
+#: Совпадение по имени файла без расширения, регистр не важен.
+ICON_ALIASES: dict[str, tuple[str, ...]] = {
+    "FI": ("glad", "gladiator", "fighter"),
+    "KN": ("templar", "knight"),
+    "AS": ("sin", "assassin"),
+    "RA": ("ranger", "archer"),
+    "WI": ("sorc", "sorcerer", "wizard"),
+    "EL": ("sm", "spiritmaster", "summoner"),
+    "PR": ("cleric", "priest"),
+    "CH": ("chanter",),
+    "Ba": ("bard", "songweaver", "muse"),
+    "Gu": ("gunner", "gunslinger"),
+    "RI": ("aethertech", "rider", "technist"),
+}
+
+
+def icon_candidates(code: str) -> tuple[str, ...]:
+    """Возможные имена файла иконки для класса, от точного к общему."""
+    aliases = ICON_ALIASES.get(code, ())
+    if isinstance(aliases, str):
+        aliases = (aliases,)
+    return (code.lower(),) + tuple(aliases)
+
+
 _ROW_RE = re.compile(
     r"<name>STR_SKILL_([A-Za-z0-9]+)_[^<]*</name>\s*<body>([^<]*)</body>")
 

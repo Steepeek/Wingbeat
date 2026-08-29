@@ -37,6 +37,8 @@ from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication
                            QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygon)
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
+from pathlib import Path
+
 from . import hotkeys as hk
 from . import skilldb
 
@@ -69,8 +71,50 @@ RED = QColor(232, 106, 106)
 ROW_SELF_BG = QColor(237, 165, 73, 34)
 BAR_SELF = QColor(237, 165, 73, 92)
 BAR_OTHER = QColor(120, 150, 180, 52)
+BAR_SKILL = QColor(120, 140, 165, 44)
+
 #: Полупрозрачные версии цветов классов для полос
-_CLASS_BAR: dict[str, QColor] = {}
+_CLASS_BAR: dict[tuple[str, int], QColor] = {}
+
+
+#: Кэш иконок классов: код -> QPixmap нужного размера или None
+_ICON_CACHE: dict[tuple[str, str, int], object] = {}
+_ICON_EXT = (".png", ".dds", ".bmp", ".jpg")
+
+
+def class_icon(icons_dir: str, code: str, size: int):
+    """Иконка класса из папки пользователя или None.
+
+    Ничего не скачиваем и ничего не кладём в репозиторий: иконки — это art
+    NCSoft. Человек указывает свою папку сам, файлы остаются у него.
+    """
+    if not icons_dir or not code:
+        return None
+    key = (icons_dir, code, size)
+    if key in _ICON_CACHE:
+        return _ICON_CACHE[key]
+    pm = None
+    folder = Path(icons_dir)
+    if folder.is_dir():
+        wanted = skilldb.icon_candidates(code)
+        by_stem = {}
+        try:
+            for f in folder.iterdir():
+                if f.suffix.lower() in _ICON_EXT:
+                    by_stem.setdefault(f.stem.lower(), f)
+        except OSError:
+            by_stem = {}
+        for name in wanted:
+            f = by_stem.get(name)
+            if f is None:
+                continue
+            loaded = QPixmap(str(f))
+            if not loaded.isNull():
+                pm = loaded.scaled(size, size, Qt.KeepAspectRatio,
+                                   Qt.SmoothTransformation)
+            break
+    _ICON_CACHE[key] = pm
+    return pm
 
 
 def class_colour(code: str, alpha: int = 255) -> QColor | None:
@@ -87,7 +131,7 @@ def class_colour(code: str, alpha: int = 255) -> QColor | None:
         c.setAlpha(alpha)
         _CLASS_BAR[key] = c
     return c
-BAR_SKILL = QColor(120, 140, 165, 44)
+
 
 METRIC_TABS = (("damage", "Урон"), ("heal", "Хил"), ("taken", "Получено"))
 METRIC_TITLE = {"damage": "Урон", "heal": "Хил", "taken": "Полученный урон"}
@@ -522,15 +566,23 @@ class Overlay(QWidget):
         p.setPen(ACCENT if is_self else TEXT)
         cols_w = sum(cw for _k, cw in self._columns(w))
         fm = QFontMetrics(font)
+        icon_size = self.row_h - 8
+        icon = class_icon(self.cfg.get("icons_dir", ""), r.get("cls", ""), icon_size)
+        x_name = 11
+        if icon is not None:
+            p.drawPixmap(11, y + 4, icon)
+            x_name = 13 + icon.width()
+
         mark = "▾ " if self.selected == r["name"] else ""
         name = fm.elidedText(f"{mark}{i + 1}  {r['display']}", Qt.ElideRight,
-                             max(60, w - 20 - cols_w))
-        p.drawText(11, y + self.row_h - 8, name)
-        # Метка класса сразу за именем, тем же цветом, что и полоса
-        cls_colour = class_colour(r.get("cls", ""))
+                             max(60, w - 9 - x_name - cols_w))
+        p.drawText(x_name, y + self.row_h - 8, name)
+        # Название класса — только если иконки нет: иначе строка теснится,
+        # а класс и так виден.
+        cls_colour = None if icon is not None else class_colour(r.get("cls", ""))
         if cls_colour and r.get("cls_name"):
-            x_cls = 13 + fm.horizontalAdvance(name)
-            room = w - 20 - cols_w - x_cls
+            x_cls = x_name + 2 + fm.horizontalAdvance(name)
+            room = w - 12 - cols_w - x_cls
             if room > 30:
                 p.setFont(self.font_small)
                 p.setPen(cls_colour)
