@@ -134,6 +134,8 @@ class Meter:
         self.pending_close = 0
         self.last_ts = 0
         self.stats = Counter()
+        #: Добыча за сессию: опыт, AP, кинах, убийства, смерти.
+        self.loot: Counter = Counter()
 
     # -- служебное --
 
@@ -142,6 +144,7 @@ class Meter:
             self.history.append(self.encounter)
         self.encounter = None
         self.session = Encounter(0, self.cfg)
+        self.loot.clear()
         self.pending_close = 0
 
     def set_party(self, name: str, is_party: bool) -> None:
@@ -228,7 +231,20 @@ class Meter:
                 self.party_seen.add(ev.actor)
             return
 
+        if kind == "loot":
+            self.loot[ev.extra] += ev.amount
+            return
+
+        if kind == "pvp":
+            if ev.actor == SELF or (self.self_name and ev.actor == self.self_name):
+                self.loot["pvp_kills"] += 1
+            elif ev.target == SELF or (self.self_name and ev.target == self.self_name):
+                self.loot["pvp_deaths"] += 1
+            return
+
         if kind == "xp":
+            self.loot["exp"] += ev.amount
+            self.loot["kills"] += 1
             self.mobs.add(ev.target)
             self.session.kills.append(ev.target)
             enc = self.encounter
@@ -238,6 +254,8 @@ class Meter:
             return
 
         if kind == "death":
+            if ev.target == SELF or (self.self_name and ev.target == self.self_name):
+                self.loot["deaths"] += 1
             self.mobs.discard(ev.target)
             return
 
@@ -341,7 +359,7 @@ class Meter:
                     "max": a.max_hit,
                     "is_self": name == SELF or (bool(self.self_name) and name == self.self_name),
                     "is_party": name in self.party,
-                    "top_skill": a.skills.most_common(1)[0][0] if a.skills else "",
+                    "skills": a.skills.most_common(8),
                 })
 
         # Сортировка: сначала своя группа, внутри — по урону.
@@ -374,6 +392,7 @@ class Meter:
             "duration": enc.duration if enc and enc.start else 0,
             "target": enc.dominant if enc else "",
             "kills": len(enc.kills) if enc else 0,
+            "loot": dict(self.loot),
             "window": window,
             "metric": metric,
             "mode": "session" if whole else "encounter",

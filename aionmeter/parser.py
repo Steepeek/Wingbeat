@@ -111,6 +111,17 @@ RE_XP = re.compile(
     r"(?: \(.*\))?\.$"
 )
 
+# Добыча за сессию. Точные формулировки из STR_MSG_* клиента.
+RE_AP = re.compile(r"^You have gained (?P<amount>" + NUM + r") Abyss Points\.$")
+RE_KINAH_IN = re.compile(
+    r"^You (?:have earned|received(?: a refund of)?) (?P<amount>" + NUM + r") Kinah")
+RE_KINAH_OUT = re.compile(r"^You spent (?P<amount>" + NUM + r") Kinah\.$")
+
+# PvP: "Kaj has defeated Zxsadntlgw." / "You have defeated X."
+RE_PVP = re.compile(
+    r"^(?:You have defeated (?P<victim1>.+?)"
+    r"|(?P<killer>" + NAME + r") has defeated (?P<victim2>.+?))\.$")
+
 # "You were killed by <X>'s attack." / "<A> was killed by <B>'s attack."
 RE_DEATH = re.compile(
     r"^(?P<victim>" + NAME + r") (?:was|were) killed by (?P<killer>.+?)'s attack\.$"
@@ -279,6 +290,23 @@ def parse(ts: str, body: str) -> Event | None:
     m = RE_XP.match(body)
     if m:
         return Event("xp", ts_to_epoch(ts), target=m["mob"], amount=to_int(m["amount"]))
+
+    if body[0] == "Y":                       # дешёвый отсев: все ниже начинаются с "You"
+        m = RE_AP.match(body)
+        if m:
+            return Event("loot", ts_to_epoch(ts), amount=to_int(m["amount"]), extra="ap")
+        m = RE_KINAH_IN.match(body)
+        if m:
+            return Event("loot", ts_to_epoch(ts), amount=to_int(m["amount"]), extra="kinah_in")
+        m = RE_KINAH_OUT.match(body)
+        if m:
+            return Event("loot", ts_to_epoch(ts), amount=to_int(m["amount"]), extra="kinah_out")
+
+    m = RE_PVP.match(body)
+    if m:
+        killer = m["killer"] or SELF
+        return Event("pvp", ts_to_epoch(ts), actor=killer,
+                     target=m["victim1"] or m["victim2"])
 
     m = RE_DEATH.match(body)
     if m:

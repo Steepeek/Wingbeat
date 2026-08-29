@@ -29,6 +29,8 @@ DEFAULTS: dict = {
     "merge_pets": True,          # урон питомцев приписывать владельцу
     "columns": ["dmg", "dps", "pct", "hits"],
     "max_rows": 12,
+    "show_loot": True,          # строка внизу: опыт, AP, кинах, убийства
+
 
     # --- внешний вид ---
     "transparent": False,        # сквозная прозрачность фона (для оверлея поверх игры)
@@ -36,7 +38,7 @@ DEFAULTS: dict = {
     "font_size": 12,
     "click_through": False,
     "always_on_top": True,
-    "window": {"x": 80, "y": 80, "w": 360, "h": 300},
+    "window": {"x": 80, "y": 80, "w": 400, "h": 340},
 
     # --- хоткеи (пусто = выключен) ---
     "hotkeys": {

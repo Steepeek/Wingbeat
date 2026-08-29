@@ -97,6 +97,21 @@ check("призыв пета", (e.kind, e.target, e.extra), ("summon", "Holy Ser
 e = P("[3.LFG] Steepeek: SR DECK CLER")
 check("своя реплика в чате => свой ник", (e.kind, e.actor), ("chat", "Steepeek"))
 
+print("парсер: добыча и PvP")
+
+e = P("You have gained 435 Abyss Points.")
+check("очки бездны", (e.kind, e.extra, e.amount), ("loot", "ap", 435))
+e = P("You have earned 143" + NBSP + "097 Kinah.")
+check("кинах получен", (e.kind, e.extra, e.amount), ("loot", "kinah_in", 143097))
+e = P("You spent 12" + NBSP + "000 Kinah.")
+check("кинах потрачен", (e.kind, e.extra, e.amount), ("loot", "kinah_out", 12000))
+e = P("Kaj has defeated Zxsadntlgw.")
+check("чужое PvP-убийство", (e.kind, e.actor, e.target), ("pvp", "Kaj", "Zxsadntlgw"))
+e = P("You have defeated Sunayaka.")
+check("своё PvP-убийство", (e.kind, e.actor, e.target), ("pvp", "You", "Sunayaka"))
+check("строка про нехватку AP не считается добычей",
+      P("You do not have enough Abyss Points."), None)
+
 print("парсер: защита от подделки и мусора")
 
 # Чужая реплика распознаётся как чат (нужно для канала группы), но НЕ как урон
@@ -234,6 +249,37 @@ m11.feed(parse("2026.08.29 19:00:01", "Sniper received 100 damage from Mob."))
 m11.set_party("Sniper", False)
 check("ручное исключение сильнее автоматики",
       m11.snapshot(DAMAGE)["rows"][0]["section"], "other")
+
+print("агрегатор: добыча и разбор по скиллам")
+
+m12 = Meter(dict(DEFAULTS))
+m12.cfg["scope"] = "all"
+for line in ("You have gained 500 XP from Mob.",
+             "You have gained 435 Abyss Points.",
+             "You have earned 1" + NBSP + "000 Kinah.",
+             "You have defeated Enemy.",
+             "You were killed by Enemy's attack."):
+    m12.feed(parse("2026.08.29 19:00:00", line))
+loot = m12.snapshot(DAMAGE)["loot"]
+check("счётчики добычи",
+      (loot.get("exp"), loot.get("ap"), loot.get("kinah_in"),
+       loot.get("kills"), loot.get("pvp_kills"), loot.get("deaths")),
+      (500, 435, 1000, 1, 1, 1))
+
+m13 = Meter(dict(DEFAULTS))
+m13.cfg["scope"] = "all"
+m13.feed(parse("2026.08.29 19:00:00", "You inflicted 300 damage on Mob by using Gale Arrow VII."))
+m13.feed(parse("2026.08.29 19:00:01", "You inflicted 200 damage on Mob by using Gale Arrow VII."))
+m13.feed(parse("2026.08.29 19:00:02", "You inflicted 100 damage on Mob by using Swift Shot V."))
+m13.feed(parse("2026.08.29 19:00:03", "You inflicted 50 damage on Mob."))
+row13 = m13.snapshot(DAMAGE)["rows"][0]
+check("разбор по скиллам в снимке", row13["skills"],
+      [("Gale Arrow VII", 500), ("Swift Shot V", 100)])
+check("автоатаки в разбор скиллов не попадают (имени скилла в логе нет)",
+      row13["total"] - sum(v for _k, v in row13["skills"]), 50)
+
+m13.reset()
+check("очистка обнуляет и добычу", m13.snapshot(DAMAGE)["loot"], {})
 
 print("агрегатор: очистка")
 

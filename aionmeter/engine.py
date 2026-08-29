@@ -72,6 +72,14 @@ class Engine:
     def reset(self) -> None:
         with self._lock:
             self.meter.reset()
+            # Пересобираем снимок сразу: иначе до следующего тика в окне висят
+            # старые цифры и кнопка выглядит как ненажатая.
+            snap = self.meter.snapshot()
+        snap["stats"] = {"read": self.read_lines, "parsed": self.parsed,
+                         "unknown": self.unknown,
+                         "rotations": self.tailer.rotations if self.tailer else 0}
+        snap["error"] = self.error
+        self._snapshot = snap
 
     # -- фоновый цикл --
 

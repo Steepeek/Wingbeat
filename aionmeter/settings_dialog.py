@@ -181,6 +181,10 @@ class SettingsDialog(QDialog):
             grid.addWidget(ch, i // 3, i % 3)
         form.addRow(box)
 
+        self.ch_loot = QCheckBox("Строка добычи внизу (опыт, AP, кинах, убийства)")
+        self.ch_loot.setChecked(self.cfg.get("show_loot", True))
+        form.addRow("", self.ch_loot)
+
         self.ch_transparent = QCheckBox("Прозрачный фон (режим оверлея)")
         self.ch_transparent.setChecked(self.cfg.get("transparent", False))
         form.addRow("", self.ch_transparent)
@@ -305,6 +309,7 @@ class SettingsDialog(QDialog):
         cfg["metric"] = self.cb_metric.currentData()
         cfg["mode"] = self.cb_mode.currentData()
         cfg["transparent"] = self.ch_transparent.isChecked()
+        cfg["show_loot"] = self.ch_loot.isChecked()
         cfg["columns"] = [k for k, ch in self.col_checks.items() if ch.isChecked()]
         cfg["opacity"] = self.sl_opacity.value() / 100
         cfg["font_size"] = self.sp_font.value()
