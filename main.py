@@ -5,8 +5,15 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+# До создания QApplication. Freetype убирает цветную субпиксельную бахрому
+# на тёмном фоне (замер: 771 цветной пиксель -> 0) и ускоряет отрисовку
+# текста почти вдвое. Segoe UI Variable с ним несовместим, но обычный
+# Segoe UI и так рисует табличные цифры.
+os.environ.setdefault("QT_QPA_PLATFORM", "windows:fontengine=freetype")
 
 sys.path.insert(0, str(Path(__file__).parent))
 

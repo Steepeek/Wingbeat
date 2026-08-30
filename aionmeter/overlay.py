@@ -1,21 +1,26 @@
 """Окно метра.
 
-Устройство простое и без сюрпризов:
+    ┌────────────────────────────────────────────────┐
+    │  Урон  Хил  Получено           ▶ ⟲ ⧉   ≡ ✕    │ шапка
+    │  #  ИГРОК              УРОН   DPS    %   УД.   │ заголовки колонок
+    ╞════════════════════════════════════════════════╡
+    │▌◆ 1  Steepeek         8,40M  12,4k  35%   284  │ строка
+    │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│ рельс = доля от лидера
+    │▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔                   │ нить = темп прямо сейчас
+    ├────────────────────────────────────────────────┤
+    │ ● 02:14   AP 82,2k              ИТОГО  16,1M   │ футер
+    └────────────────────────────────────────────────┘
 
-    ┌──────────────────────────────────────┐
-    │ [▶] [■] [⟲] [⧉] [⚙]            [×]  │  кнопки
-    │  Урон   Хил   Получено   02:14  101k │  вкладки + состояние
-    ├──────────────────────────────────────┤
-    │ 1  Weisti       37.9k  2 946/с  51%  │
-    │ 2  Steepeek     21.9k  1 697/с  30%  │  своя строка выделена
-    ├──────────────────────────────────────┤
-    │ опыт 1.5M · AP 129 · убито 3         │
-    └──────────────────────────────────────┘
+Почему полоса — рельс по нижней кромке, а не заливка строки: заливка цветом
+класса роняла контраст текста поверх яркого кадра игры до 2.1:1 у худшего
+класса, и подбором альфы это не чинилось. Рельс убирает текст с цветного
+фона совсем, а тон класса остаётся виден.
 
-Показываем всех, кто наносил урон. Своя строка подсвечена полосой слева и
-цветом — этого достаточно, чтобы найти себя взглядом.
+Нить темпа — единственное, чего нет у Details, Skada, Kagerou и loa-logs:
+они показывают только накопленное. Нить длиннее рельса значит «разгоняется»,
+короче — «сдулся», нет — «стоит».
 
-Что нужно от Windows, когда окно работает поверх игры:
+Что нужно от Windows, когда окно висит поверх игры:
 
 * WS_EX_NOACTIVATE — окно не забирает фокус. Без этого клик по нему
   сворачивает игру в оконном полноэкранном режиме.
@@ -31,17 +36,22 @@ from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
+from pathlib import Path
 
-from PySide6.QtCore import QPoint, QRect, Qt, QTimer
+from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication,
                            QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygon)
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
-from pathlib import Path
-
 from . import config as cfgmod
 from . import hotkeys as hk
 from . import skilldb
+from .aggregate import UNATTRIBUTED
+from .theme import (ACCENT, ALPHA_GLASS, ALPHA_GLASS_CHROME, DANGER, EDGE_DARK,
+                    EDGE_LIT, GAP, GROUP, HAIR, HOVER, INK, INK2, INK3, INK_MUTE,
+                    L0, L1, L2, LIVE, PAD, PRESS, R_BUTTON, R_CHIP, R_WINDOW,
+                    RULE, SHADOW, SORTBG, TRACK, class_triple, fmt_chat, fmt_ui,
+                    snap)
 
 IS_WINDOWS = hasattr(ctypes, "windll")
 
@@ -52,52 +62,41 @@ WS_EX_NOACTIVATE = 0x08000000
 HWND_TOPMOST = -1
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
 
-# --- палитра --------------------------------------------------------------
+METRIC_TABS = (("damage", "Урон"), ("heal", "Хил"), ("taken", "Получено"))
+METRIC_TITLE = {"damage": "Урон", "heal": "Хил", "taken": "Полученный урон"}
 
-BG = QColor(19, 24, 30)
-BG_TRANSPARENT = QColor(16, 20, 26, 225)
-BG_HEAD = QColor(27, 34, 42)
-BG_STRIP = QColor(23, 29, 36)
-BTN_BG = QColor(38, 48, 59)
-BTN_BG_HOVER = QColor(52, 65, 79)
-BTN_EDGE = QColor(255, 255, 255, 30)
-LINE = QColor(255, 255, 255, 28)
-LINE_STRONG = QColor(255, 255, 255, 46)
-TEXT = QColor(226, 232, 236)
-TEXT_DIM = QColor(146, 158, 169)
-TEXT_FAINT = QColor(108, 120, 132)
-ACCENT = QColor(237, 165, 73)
-GREEN = QColor(96, 194, 128)
-RED = QColor(232, 106, 106)
-ROW_SELF_BG = QColor(237, 165, 73, 34)
-BAR_SELF = QColor(237, 165, 73, 92)
-BAR_OTHER = QColor(120, 150, 180, 52)
-BAR_SKILL = QColor(120, 140, 165, 44)
+#: Заголовки колонок под каждую вкладку. Потолок — 6 символов: длиннее не
+#: влезает в узкое окно, а обрезанный заголовок хуже отсутствующего.
+CAPTIONS = {
+    "damage": {"dmg": "УРОН", "dps": "DPS", "pct": "%", "hits": "УД.", "crit": "КР."},
+    "heal": {"dmg": "ХИЛ", "dps": "HPS", "pct": "%", "hits": "КАСТ", "crit": "КР."},
+    "taken": {"dmg": "УРОН", "dps": "DPS", "pct": "%", "hits": "УД.", "crit": "КР."},
+}
+COL_ORDER = ("dmg", "dps", "pct", "hits", "crit")
 
-#: Полупрозрачные версии цветов классов для полос
-_CLASS_BAR: dict[tuple[str, int], QColor] = {}
+#: Эталонные значения для замера ширины колонки. Меряем ОДИН раз по ним, а
+#: не по данным на каждом кадре: иначе блок колонок скачет на 56 px, когда
+#: лидер переходит через миллион, и колонки видимо ползают.
+COL_REF = {"dmg": ("888,88", "M"), "dps": ("888,8", "k"), "pct": ("100%", ""),
+           "hits": ("8888", ""), "crit": ("100%", "")}
 
+TOOLBAR = (("play", "Старт / стоп"), ("clear", "Очистить"), ("copy", "Скопировать в чат"))
+TOOLBAR_RIGHT = (("menu", "Меню"), ("close", "Выход"))
 
-#: Кэш иконок классов: код -> QPixmap нужного размера или None
-_ICON_CACHE: dict[tuple[str, str, int], object] = {}
-_ICON_EXT = (".png", ".dds", ".bmp", ".jpg")
+_ICON_CACHE: dict[tuple, object] = {}
+_ICON_EXT = (".png", ".gif", ".webp", ".dds", ".bmp", ".jpg")
 
 
-def class_icon(icons_dir: str, code: str, size: int):
-    """Иконка класса из папки пользователя или None.
-
-    Ничего не скачиваем и ничего не кладём в репозиторий: иконки — это art
-    NCSoft. Человек указывает свою папку сам, файлы остаются у него.
-    """
+def class_icon(icons_dir: str, code: str, size: int, dpr: float = 1.0):
+    """Иконка класса из папки пользователя или None."""
     if not icons_dir or not code:
         return None
-    key = (icons_dir, code, size)
+    key = (icons_dir, code, size, round(dpr, 2))
     if key in _ICON_CACHE:
         return _ICON_CACHE[key]
     pm = None
     folder = Path(icons_dir)
     if folder.is_dir():
-        wanted = skilldb.icon_candidates(code)
         by_stem = {}
         try:
             for f in folder.iterdir():
@@ -105,28 +104,25 @@ def class_icon(icons_dir: str, code: str, size: int):
                     by_stem.setdefault(f.stem.lower(), f)
         except OSError:
             by_stem = {}
-        for name in wanted:
+        for name in skilldb.icon_candidates(code):
             f = by_stem.get(name)
             if f is None:
                 continue
             loaded = QPixmap(str(f))
             if not loaded.isNull():
-                pm = loaded.scaled(size, size, Qt.KeepAspectRatio,
-                                   Qt.SmoothTransformation)
+                px = max(1, int(round(size * dpr)))
+                pm = loaded.scaled(px, px, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                pm.setDevicePixelRatio(dpr)
             break
     _ICON_CACHE[key] = pm
     return pm
 
 
-def skill_icon(icons_dir: str, name: str, size: int):
-    """Иконка скилла из локальной папки или None.
-
-    Папку наполняет отдельная утилита tools/fetch_skill_icons.py, запускаемая
-    руками. Сам метр в сеть не ходит.
-    """
+def skill_icon(icons_dir: str, name: str, size: int, dpr: float = 1.0):
+    """Иконка скилла из локальной папки или None."""
     if not icons_dir or not name:
         return None
-    key = (icons_dir, "skill:" + name, size)
+    key = (icons_dir, "s:" + name, size, round(dpr, 2))
     if key in _ICON_CACHE:
         return _ICON_CACHE[key]
     pm = None
@@ -135,50 +131,12 @@ def skill_icon(icons_dir: str, name: str, size: int):
         if f.is_file():
             loaded = QPixmap(str(f))
             if not loaded.isNull():
-                pm = loaded.scaled(size, size, Qt.KeepAspectRatio,
-                                   Qt.SmoothTransformation)
+                px = max(1, int(round(size * dpr)))
+                pm = loaded.scaled(px, px, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                pm.setDevicePixelRatio(dpr)
             break
     _ICON_CACHE[key] = pm
     return pm
-
-
-def class_colour(code: str, alpha: int = 255) -> QColor | None:
-    """Цвет класса или None, если класс не определён."""
-    if not code:
-        return None
-    key = (code, alpha)
-    c = _CLASS_BAR.get(key)
-    if c is None:
-        hexrgb = skilldb.COLOURS.get(code)
-        if not hexrgb:
-            return None
-        c = QColor(hexrgb)
-        c.setAlpha(alpha)
-        _CLASS_BAR[key] = c
-    return c
-
-
-METRIC_TABS = (("damage", "Урон"), ("heal", "Хил"), ("taken", "Получено"))
-METRIC_TITLE = {"damage": "Урон", "heal": "Хил", "taken": "Полученный урон"}
-
-#: name, подпись под курсором
-TOOLBAR = (
-    ("start", "Старт"),
-    ("stop", "Стоп"),
-    ("clear", "Очистить"),
-    ("copy", "Скопировать в чат"),
-    ("settings", "Настройки"),
-)
-
-
-def fmt(n: float) -> str:
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.2f}M"
-    if n >= 10_000:
-        return f"{n / 1000:.1f}k"
-    if n >= 1000:
-        return f"{n:,.0f}".replace(",", " ")
-    return f"{n:.0f}"
 
 
 def make_icon() -> QIcon:
@@ -186,7 +144,7 @@ def make_icon() -> QIcon:
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
-    p.setBrush(QColor(20, 26, 33))
+    p.setBrush(QColor(17, 22, 28))
     p.setPen(Qt.NoPen)
     p.drawRoundedRect(2, 2, 60, 60, 12, 12)
     p.setBrush(ACCENT)
@@ -197,11 +155,6 @@ def make_icon() -> QIcon:
 
 
 class Overlay(QWidget):
-    BTN = 28              # сторона квадратной кнопки
-    BAR_H = 38            # ряд кнопок
-    TAB_H = 28            # ряд вкладок и состояния
-    FOOTER_H = 20
-
     def __init__(self, engine, cfg: dict, on_settings=None, on_quit=None):
         super().__init__(None)
         self.engine = engine
@@ -216,6 +169,10 @@ class Overlay(QWidget):
         self._hot = ""
         self._hit: list[tuple[str, QRect]] = []
         self._row_rects: list[tuple[QRect, dict]] = []
+        self._anim: dict[str, list[float]] = {}
+        self._pulse = 0.0
+        self._max_h = int(cfg["window"]["h"])   # потолок = то, что растянул человек
+        self._shrink_after = 0
         self.hotkeys: hk.HotkeyManager | None = None
 
         self.setWindowFlags(
@@ -228,7 +185,7 @@ class Overlay(QWidget):
 
         w = cfg["window"]
         self.setGeometry(w["x"], w["y"], w["w"], w["h"])
-        self.setMinimumSize(300, 150)
+        self.setMinimumSize(280, 140)
         self._apply_font()
         self._apply_translucency()
 
@@ -236,11 +193,102 @@ class Overlay(QWidget):
         self.timer.timeout.connect(self._refresh)
         self.timer.start(250)
 
+        # 30 Гц, а не 60: при данных раз в секунду глаз разницы не видит,
+        # а 60 Гц на реальном окне съедает до 39 % ядра вместо обещанных 13 %.
+        self.anim_timer = QTimer(self)
+        self.anim_timer.timeout.connect(self._tick_anim)
+        self.anim_timer.start(33)
+
         self.topmost_timer = QTimer(self)
         self.topmost_timer.timeout.connect(self._keep_on_top)
         self.topmost_timer.start(2000)
 
-    # -- внешний вид --
+    # -- метрики: всё считается от высоты строки шрифта ---------------------
+
+    def _apply_font(self) -> None:
+        size = int(self.cfg.get("font_size", 12))
+        fam = "Segoe UI"
+        self.f_body = QFont(fam, size)
+        self.f_self = QFont(fam, size, QFont.DemiBold)
+        self.f_tab = QFont(fam, size, QFont.DemiBold)
+        self.f_num = QFont(fam, max(7, size - 1))
+        self.f_small = QFont(fam, max(7, size - 3))
+        self.f_caps = QFont(fam, max(6, size - 4), QFont.DemiBold)
+        self.f_caps.setCapitalization(QFont.AllUppercase)
+
+        fm = QFontMetrics(self.f_body)
+        self.H = fm.height()
+        self.ROW_H = self.H + 8
+        self.HEAD_H = self.H + 8
+        self.COL_H = QFontMetrics(self.f_caps).ascent() + 6
+        self.FOOT_H = QFontMetrics(self.f_small).height() + 6
+        self.SKILL_H = QFontMetrics(self.f_small).height() + 4
+        self.RAIL = max(2, round(self.H / 8))
+        self.ICON = max(12, min(20, self.H - 5))
+        self.BTN = self.H + 4
+        # Одна базовая линия на все три кегля в строке
+        self.BASE = (self.ROW_H - self.RAIL - 2 + fm.ascent() - fm.descent()) // 2
+        self._measure_columns()
+
+    def resizeEvent(self, e) -> None:
+        self._colcache.clear()
+        super().resizeEvent(e)
+
+    def _measure_columns(self) -> None:
+        """Ширины колонок считаются один раз по эталонам, а не по данным."""
+        fm_num, fm_small = QFontMetrics(self.f_num), QFontMetrics(self.f_small)
+        fm_body, fm_caps = QFontMetrics(self.f_body), QFontMetrics(self.f_caps)
+        caps = CAPTIONS.get(self.cfg.get("metric", "damage"), CAPTIONS["damage"])
+        self._colw = {}
+        self._colcache: dict[int, list] = {}
+        for key, (mant, suf) in COL_REF.items():
+            fm_val = fm_body if key == "dmg" else fm_num
+            value = fm_val.horizontalAdvance(mant) + (
+                fm_small.horizontalAdvance(suf) if suf else 0)
+            head = fm_caps.horizontalAdvance(caps.get(key, "").upper())
+            self._colw[key] = max(value, head) + GAP
+
+    #: Порядок отбрасывания колонок в узком окне. Урон не выбрасывается
+    #: никогда: без него таблица теряет смысл.
+    DROP_ORDER = ("crit", "hits", "pct", "dps")
+    NAME_MIN = 96
+
+    def columns(self, w: int | None = None) -> list[tuple[str, int]]:
+        """Видимые колонки. В узком окне лишние отбрасываются.
+
+        Ник важнее любой числовой колонки: строку, где от имени осталось
+        «Ste…», читать невозможно, а доля и удары — справочные величины.
+        """
+        active = [c for c in COL_ORDER
+                  if c in self.cfg.get("columns", ["dmg", "dps", "pct"])
+                  and c in self._colw]
+        if w is None:
+            return [(c, self._colw[c]) for c in active]
+        cached = self._colcache.get(w)
+        if cached is not None:
+            return cached
+        left = PAD + self.ICON + GAP + 20          # иконка + ранг
+        for drop in (None,) + self.DROP_ORDER:
+            if drop is not None:
+                if len(active) <= 1:
+                    break
+                active = [c for c in active if c != drop]
+            used = sum(self._colw[c] for c in active)
+            if w - PAD - left - used >= self.NAME_MIN:
+                break
+        result = [(c, self._colw[c]) for c in active]
+        self._colcache[w] = result
+        return result
+
+    @property
+    def chrome_h(self) -> int:
+        return self.HEAD_H + self.COL_H + 1 + 1 + self.foot_h
+
+    @property
+    def foot_h(self) -> int:
+        return self.FOOT_H if self.cfg.get("show_loot", True) else 0
+
+    # -- внешний вид --------------------------------------------------------
 
     def _apply_translucency(self) -> None:
         transparent = bool(self.cfg.get("transparent"))
@@ -248,8 +296,6 @@ class Overlay(QWidget):
         self.setWindowOpacity(self.cfg.get("opacity", 1.0) if transparent else 1.0)
 
     def apply_appearance(self) -> None:
-        """Смена прозрачности меняет тип нативного окна, поэтому его надо
-        пересоздать, а стили и хоткеи навесить заново."""
         was_visible = self.isVisible()
         self.hide()
         self._apply_translucency()
@@ -260,26 +306,14 @@ class Overlay(QWidget):
         self.setup_hotkeys()
         self.update()
 
-    def _apply_font(self) -> None:
-        size = self.cfg.get("font_size", 12)
-        self.font_body = QFont("Segoe UI", size)
-        self.font_self = QFont("Segoe UI", size, QFont.DemiBold)
-        self.font_tab = QFont("Segoe UI", size, QFont.DemiBold)
-        self.font_small = QFont("Segoe UI", max(7, size - 3))
-        self.font_num = QFont("Consolas", size - 1)
-        self.font_skill = QFont("Segoe UI", max(7, size - 3))
-        self.row_h = QFontMetrics(self.font_body).height() + 9
-        self.skill_h = QFontMetrics(self.font_skill).height() + 3
+    def _bg(self, base: QColor, chrome: bool = False) -> QColor:
+        if not self.cfg.get("transparent"):
+            return base
+        c = QColor(base)
+        c.setAlpha(ALPHA_GLASS_CHROME if chrome else ALPHA_GLASS)
+        return c
 
-    @property
-    def head_h(self) -> int:
-        return self.BAR_H + self.TAB_H
-
-    @property
-    def footer_h(self) -> int:
-        return self.FOOTER_H if self.cfg.get("show_loot", True) else 0
-
-    # -- Win32 --
+    # -- Win32 --------------------------------------------------------------
 
     @property
     def hwnd(self) -> int:
@@ -334,15 +368,7 @@ class Overlay(QWidget):
                 return True, 0
         return False, 0
 
-    # -- действия --
-
-    def action_start(self) -> None:
-        self.engine.set_paused(False)
-        self._refresh()
-
-    def action_stop(self) -> None:
-        self.engine.set_paused(True)
-        self._refresh()
+    # -- действия -----------------------------------------------------------
 
     def action_toggle_pause(self) -> None:
         self.engine.set_paused(not self.engine.paused)
@@ -351,6 +377,7 @@ class Overlay(QWidget):
     def action_clear(self) -> None:
         self.engine.reset()
         self.selected = ""
+        self._anim.clear()
         self._refresh()
 
     def action_toggle_click(self) -> None:
@@ -364,20 +391,20 @@ class Overlay(QWidget):
     def set_metric(self, metric: str) -> None:
         self.cfg["metric"] = metric
         self.selected = ""
+        self._measure_columns()
         self._refresh()
 
     def action_copy(self) -> None:
         """Строка для вставки в игровой чат (лимит около 255 символов)."""
-        snap = self.snapshot
-        rows = snap.get("rows", [])
+        rows = [r for r in self.snapshot.get("rows", ()) if r["name"] != UNATTRIBUTED]
         if not rows:
             return
-        dur = snap.get("duration", 0)
-        parts = [f"{METRIC_TITLE.get(snap.get('metric', 'damage'), 'Урон')} "
+        dur = self.snapshot.get("duration", 0)
+        parts = [f"{METRIC_TITLE.get(self.snapshot.get('metric', 'damage'), 'Урон')} "
                  f"{dur // 60}:{dur % 60:02d}:"]
         for i, r in enumerate(rows[:8], 1):
-            parts.append(f"{i}.{r['display']} {fmt(r['total'])} "
-                         f"({fmt(r['avg'])}dps {r['pct']:.0f}%)")
+            parts.append(f"{i}.{r['display']} {fmt_chat(r['total'])} "
+                         f"({fmt_chat(r['avg'])}dps {r['pct']:.0f}%)")
         lines, line = [], ""
         for token in parts:
             if len(line) + len(token) + 1 > 250:
@@ -389,105 +416,233 @@ class Overlay(QWidget):
             lines.append(line)
         QApplication.clipboard().setText("\n".join(lines))
 
-    # -- отрисовка --
+    # -- данные и анимация --------------------------------------------------
 
     def _refresh(self) -> None:
         self.snapshot = self.engine.snapshot()
+        self._fit_height()
         self.update()
+
+    def _content_h(self) -> int:
+        rows = self.snapshot.get("rows", ())
+        n = len(rows)
+        extra = 0
+        for r in rows:
+            if self.selected == r["name"]:
+                skills = len(r.get("skills") or [])
+                auto = r["total"] - sum(v for _k, v in (r.get("skills") or []))
+                extra += (min(6, skills) + (1 if auto > 0 else 0)) * self.SKILL_H
+        if not n:
+            return self.chrome_h + 70
+        return self.chrome_h + n * self.ROW_H + extra + 2
+
+    def _fit_height(self) -> None:
+        """Высота по содержимому с гистерезисом.
+
+        Растём сразу, уменьшаемся только после трёх секунд тишины: иначе
+        окно дышало бы четыре раза в секунду прямо под курсором. Потолок —
+        та высота, которую человек растянул руками.
+        """
+        if self._resizing or self._drag is not None:
+            return
+        want = max(self.minimumHeight(), min(self._max_h, self._content_h()))
+        have = self.height()
+        if want > have:
+            self._shrink_after = 0
+            self.resize(self.width(), want)
+        elif want < have:
+            self._shrink_after += 1
+            if self._shrink_after >= 12:          # 12 тиков по 250 мс = 3 с
+                self._shrink_after = 0
+                self.resize(self.width(), want)
+        else:
+            self._shrink_after = 0
+
+    def _tick_anim(self) -> None:
+        """Догоняем целевые длины рельса и нити.
+
+        Не QPropertyAnimation: цель меняется посреди анимации четыре раза в
+        секунду, и перезапуск даёт рывок на каждом обновлении.
+        """
+        if not self.isVisible():
+            return
+        rows = self.snapshot.get("rows", ())
+        peak = max((r.get("dps", 0) for r in rows), default=0) or 1
+        moved = False
+        alive = set()
+        for r in rows:
+            name = r["name"]
+            alive.add(name)
+            tgt_bar = max(0.0, min(1.0, r.get("bar", 0.0)))
+            tgt_tempo = max(0.0, min(1.0, r.get("dps", 0) / peak)) if peak > 1 else 0.0
+            cur = self._anim.get(name)
+            if cur is None:
+                self._anim[name] = [tgt_bar, tgt_tempo]
+                moved = True
+                continue
+            for i, tgt in ((0, tgt_bar), (1, tgt_tempo)):
+                delta = tgt - cur[i]
+                if abs(delta) * max(1, self.width()) < 0.5:
+                    if cur[i] != tgt:
+                        cur[i] = tgt
+                        moved = True
+                else:
+                    cur[i] += delta * 0.30
+                    moved = True
+        for gone in [k for k in self._anim if k not in alive]:
+            del self._anim[gone]
+        self._pulse = (self._pulse + 33 / 1600.0) % 1.0
+        if moved or self.snapshot.get("active"):
+            self.update()
+
+    # -- отрисовка ----------------------------------------------------------
+
+    def _txt(self, p: QPainter, x: int, base: int, text: str, colour: QColor,
+             font: QFont | None = None) -> None:
+        """Текст с тенью: за окном может оказаться белая вспышка."""
+        if font is not None:
+            p.setFont(font)
+        p.setPen(SHADOW)
+        p.drawText(x, base + 1, text)
+        p.setPen(colour)
+        p.drawText(x, base, text)
+
+    def _txt_right(self, p: QPainter, right: int, base: int, text: str,
+                   colour: QColor, font: QFont) -> int:
+        p.setFont(font)
+        w = QFontMetrics(font).horizontalAdvance(text)
+        self._txt(p, right - w, base, text, colour, font)
+        return right - w
 
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.TextAntialiasing)
         w, h = self.width(), self.height()
+        dpr = self.devicePixelRatioF()
 
         if self.cfg.get("transparent"):
             path = QPainterPath()
-            path.addRoundedRect(0, 0, w, h, 6, 6)
-            p.fillPath(path, BG_TRANSPARENT)
+            path.addRoundedRect(QRectF(0, 0, w, h), R_WINDOW, R_WINDOW)
+            p.fillPath(path, self._bg(L1))
+            p.setClipPath(path)
         else:
-            p.fillRect(0, 0, w, h, BG)
-            p.setPen(QPen(LINE_STRONG, 1))
-            p.drawRect(0, 0, w - 1, h - 1)
+            p.fillRect(0, 0, w, h, L1)
 
-        snap = self.snapshot
         self._hit = []
-        self._paint_toolbar(p, w, snap)
-        self._paint_tabs(p, w, snap)
-
-        bottom = h - 4 - self.footer_h
         self._row_rects = []
-        y = self.head_h
-        rows = snap.get("rows", [])
-        if not rows:
-            p.setFont(self.font_small)
-            p.setPen(TEXT_DIM)
-            msg = snap.get("error") or ("на паузе — нажмите «Старт»"
-                                        if snap.get("paused") else "ждём боевых событий…")
-            p.drawText(QRect(14, y + 12, w - 28, 48), Qt.AlignHCenter | Qt.TextWordWrap, msg)
-        else:
-            for i, r in enumerate(rows):
-                if y + self.row_h > bottom:
-                    break
-                self._paint_row(p, i, r, y, w)
-                self._row_rects.append((QRect(0, y, w, self.row_h), r))
-                y += self.row_h
-                if self.selected == r["name"]:
-                    y = self._paint_skills(p, r, y, w, bottom)
+        snap_ = self.snapshot
 
-        if self.footer_h:
-            self._paint_footer(p, w, h, snap)
+        self._paint_head(p, w, snap_)
+        self._paint_colheads(p, w)
+
+        top = self.HEAD_H + self.COL_H + 1
+        bottom = h - self.foot_h - 1
+        rows = [r for r in snap_.get("rows", ()) if r["name"] != UNATTRIBUTED]
+        dot = next((r for r in snap_.get("rows", ()) if r["name"] == UNATTRIBUTED), None)
+
+        if not rows and dot is None:
+            self._paint_empty(p, w, top, bottom, snap_)
+        else:
+            y = top
+            for i, r in enumerate(rows):
+                if y + self.ROW_H > bottom:
+                    break
+                self._paint_row(p, i + 1, r, y, w, dpr)
+                self._row_rects.append((QRect(0, y, w, self.ROW_H), r))
+                y += self.ROW_H
+                if self.selected == r["name"]:
+                    y = self._paint_skills(p, r, y, w, bottom, dpr)
+            # Периодический урон — не игрок: без номера, последней строкой
+            if dot is not None and y + self.ROW_H <= bottom:
+                p.fillRect(QRectF(0, snap(y, dpr), w, 1), HAIR)
+                self._paint_row(p, 0, dot, y + 1, w, dpr, muted=True)
+                self._row_rects.append((QRect(0, y + 1, w, self.ROW_H), dot))
+
+        if self.foot_h:
+            self._paint_footer(p, w, h, snap_, dpr)
+        if not self.cfg.get("transparent"):
+            p.setPen(QPen(EDGE_LIT, 1))
+            p.drawLine(0, 0, w - 1, 0)
+            p.drawLine(0, 0, 0, h - 1)
+            p.setPen(QPen(EDGE_DARK, 1))
+            p.drawLine(0, h - 1, w - 1, h - 1)
+            p.drawLine(w - 1, 0, w - 1, h - 1)
         self._paint_grip(p, w, h)
 
-    def _paint_toolbar(self, p: QPainter, w: int, snap: dict) -> None:
-        p.fillRect(QRect(0, 0, w, self.BAR_H), BG_HEAD)
-        paused = bool(snap.get("paused"))
-        top = (self.BAR_H - self.BTN) // 2
-        x = 6
-        for name, _label in TOOLBAR:
-            rect = QRect(x, top, self.BTN, self.BTN)
-            self._hit.append((f"btn:{name}", rect))
-            lit = (name == "start" and not paused) or (name == "stop" and paused)
-            self._paint_button(p, rect, name, hot=self._hot == f"btn:{name}", lit=lit)
-            x += self.BTN + 5
+    # -- шапка --------------------------------------------------------------
 
-        rect = QRect(w - 6 - self.BTN, top, self.BTN, self.BTN)
-        self._hit.append(("btn:close", rect))
-        self._paint_button(p, rect, "close", hot=self._hot == "btn:close")
-        rect = QRect(w - 11 - self.BTN * 2, top, self.BTN, self.BTN)
-        self._hit.append(("btn:menu", rect))
-        self._paint_button(p, rect, "menu", hot=self._hot == "btn:menu")
+    def _paint_head(self, p: QPainter, w: int, snap_: dict) -> None:
+        p.fillRect(QRect(0, 0, w, self.HEAD_H), self._bg(L2, chrome=True))
+        fm = QFontMetrics(self.f_tab)
+        base = (self.HEAD_H + fm.ascent() - fm.descent()) // 2
+        cur = self.cfg.get("metric", "damage")
 
-    def _paint_button(self, p: QPainter, rect: QRect, name: str,
-                      hot: bool = False, lit: bool = False) -> None:
-        p.setPen(Qt.NoPen)
-        p.setBrush(BTN_BG_HOVER if hot else BTN_BG)
-        p.drawRoundedRect(rect, 3, 3)
-        p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(BTN_EDGE, 1))
-        p.drawRoundedRect(rect, 3, 3)
+        # Блок кнопок: 3 слева + 2 справа + зазор между группами
+        buttons_w = PAD + self.BTN * 5 + 2 * 4 + GROUP
+        full = sum(fm.horizontalAdvance(l) + GROUP for _k, l in METRIC_TABS)
+        labels = dict(METRIC_TABS)
+        if PAD + full > w - buttons_w:
+            labels = {"damage": "Урон", "heal": "Хил", "taken": "Получ."}
+            short = sum(fm.horizontalAdvance(l) + GROUP for l in labels.values())
+            if PAD + short > w - buttons_w:
+                labels = {"damage": "Урон", "heal": "Хил", "taken": "Пол."}
 
-        colour = TEXT
-        if lit:
-            colour = GREEN if name == "start" else ACCENT
-        elif name == "close" and hot:
-            colour = RED
-        self._draw_icon(p, name, rect, colour)
+        x = PAD
+        for key, _full_label in METRIC_TABS:
+            label = labels[key]
+            tw = fm.horizontalAdvance(label)
+            rect = QRect(x - 4, 0, tw + 8, self.HEAD_H)
+            self._hit.append((f"metric:{key}", rect))
+            if key == cur:
+                self._txt(p, x, base, label, INK, self.f_tab)
+                p.fillRect(QRectF(x, self.HEAD_H - 3, tw, 2), INK)
+            else:
+                hot = self._hot == f"metric:{key}"
+                self._txt(p, x, base, label, INK2 if hot else INK3, self.f_tab)
+            x += tw + GROUP
 
-    def _draw_icon(self, p: QPainter, name: str, rect: QRect, colour: QColor) -> None:
-        """Значки рисуются примитивами, а не глифами шрифта: символы вроде
-        ⚙ и ↺ есть не во всех шрифтах и молча превращаются в квадратики."""
+        size = self.BTN
+        top = (self.HEAD_H - size) // 2
+        bx = w - PAD - size
+        for name, _tip in reversed(TOOLBAR_RIGHT):
+            self._button(p, QRect(bx, top, size, size), name, snap_)
+            bx -= size + 2
+        bx -= GROUP - 2
+        for name, _tip in reversed(TOOLBAR):
+            self._button(p, QRect(bx, top, size, size), name, snap_)
+            bx -= size + 2
+
+    def _button(self, p: QPainter, rect: QRect, name: str, snap_: dict) -> None:
+        self._hit.append((f"btn:{name}", rect))
+        hot = self._hot == f"btn:{name}"
+        if hot:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 107, 107, 46) if name == "close" else HOVER)
+            p.drawRoundedRect(rect, R_BUTTON, R_BUTTON)
+            p.setBrush(Qt.NoBrush)
+        colour = INK if hot else INK3
+        if name == "close" and hot:
+            colour = DANGER
+        if name == "play":
+            colour = INK if not snap_.get("paused") else ACCENT
+        self._icon(p, name, rect, colour, bool(snap_.get("paused")))
+
+    def _icon(self, p: QPainter, name: str, rect: QRect, colour: QColor,
+              paused: bool = False) -> None:
+        """Значки — примитивами: символы вроде ⚙ есть не во всех шрифтах."""
         cx, cy = rect.center().x() + 1, rect.center().y() + 1
         p.setPen(QPen(colour, 1.5))
         p.setBrush(Qt.NoBrush)
-        if name == "start":
+        if name == "play":
             p.setBrush(colour)
             p.setPen(Qt.NoPen)
-            p.drawPolygon(QPolygon([QPoint(cx - 3, cy - 6), QPoint(cx + 6, cy),
-                                    QPoint(cx - 3, cy + 6)]))
-        elif name == "stop":
-            p.setBrush(colour)
-            p.setPen(Qt.NoPen)
-            p.drawRect(QRect(cx - 5, cy - 5, 10, 10))
+            if paused:
+                p.drawPolygon(QPolygon([QPoint(cx - 3, cy - 6), QPoint(cx + 6, cy),
+                                        QPoint(cx - 3, cy + 6)]))
+            else:
+                p.drawRect(QRect(cx - 5, cy - 5, 4, 11))
+                p.drawRect(QRect(cx + 1, cy - 5, 4, 11))
         elif name == "clear":
             p.drawArc(QRect(cx - 6, cy - 6, 12, 12), 50 * 16, 280 * 16)
             p.drawLine(cx + 5, cy - 7, cx + 5, cy - 2)
@@ -495,15 +650,6 @@ class Overlay(QWidget):
         elif name == "copy":
             p.drawRect(QRect(cx - 6, cy - 6, 8, 8))
             p.drawRect(QRect(cx - 2, cy - 2, 8, 8))
-        elif name == "settings":
-            # Три ползунка: на 28 пикселях читается лучше шестерёнки
-            p.setBrush(colour)
-            for i, (dy, knob) in enumerate(((-5, 2), (0, -2), (5, 4))):
-                p.drawLine(cx - 7, cy + dy, cx + 7, cy + dy)
-                p.setPen(Qt.NoPen)
-                p.drawRect(QRect(cx + knob - 1, cy + dy - 3, 3, 6))
-                p.setPen(QPen(colour, 1.5))
-            p.setBrush(Qt.NoBrush)
         elif name == "menu":
             for dy in (-4, 0, 4):
                 p.drawLine(cx - 6, cy + dy, cx + 6, cy + dy)
@@ -511,245 +657,245 @@ class Overlay(QWidget):
             p.drawLine(cx - 5, cy - 5, cx + 5, cy + 5)
             p.drawLine(cx + 5, cy - 5, cx - 5, cy + 5)
 
-    def _paint_tabs(self, p: QPainter, w: int, snap: dict) -> None:
-        top = self.BAR_H
-        if not self.cfg.get("transparent"):
-            p.fillRect(QRect(0, top, w, self.TAB_H), BG_STRIP)
+    def _paint_colheads(self, p: QPainter, w: int) -> None:
+        top = self.HEAD_H
+        p.fillRect(QRect(0, top, w, self.COL_H), self._bg(L2, chrome=True))
+        fm = QFontMetrics(self.f_caps)
+        base = top + fm.ascent() + 3
+        caps = CAPTIONS.get(self.cfg.get("metric", "damage"), CAPTIONS["damage"])
+        p.setFont(self.f_caps)
+        p.setPen(INK3)
+        p.drawText(PAD + self.ICON + GAP + 4, base, "#")
+        p.drawText(PAD + self.ICON + GAP + 24, base, "ИГРОК")
+        x = w - PAD
+        for key, cw in reversed(self.columns(w)):
+            x -= cw
+            rect = QRect(x, top, cw, self.COL_H)
+            self._hit.append((f"col:{key}", rect))
+            label = caps.get(key, "")
+            p.setPen(INK2 if self._hot == f"col:{key}" else INK3)
+            p.drawText(QRect(x, top, cw - GAP, self.COL_H),
+                       Qt.AlignRight | Qt.AlignVCenter, label)
+        p.fillRect(QRectF(0, top + self.COL_H, w, 1), RULE)
 
-        p.setFont(self.font_tab)
-        fm = QFontMetrics(self.font_tab)
-        cur = self.cfg.get("metric", "damage")
-        x = 8
-        for key, label in METRIC_TABS:
-            tw = fm.horizontalAdvance(label) + 14
-            rect = QRect(x, top, tw, self.TAB_H)
-            self._hit.append((f"metric:{key}", rect))
-            if key == cur:
-                p.setPen(ACCENT)
-                p.drawText(rect, Qt.AlignCenter, label)
-                p.fillRect(QRect(x + 4, top + self.TAB_H - 3, tw - 8, 2), ACCENT)
-            else:
-                p.setPen(TEXT if self._hot == f"metric:{key}" else TEXT_FAINT)
-                p.drawText(rect, Qt.AlignCenter, label)
-            x += tw
+    # -- строка -------------------------------------------------------------
 
-        # Справа — итог, слева от него состояние. Под курсором вместо
-        # состояния показываем название кнопки: подсказка без всплывашек.
-        p.setFont(self.font_num)
-        total_text = fmt(snap.get("total", 0))
-        p.setPen(ACCENT)
-        p.drawText(QRect(0, top, w - 9, self.TAB_H),
-                   Qt.AlignRight | Qt.AlignVCenter, total_text)
-        total_w = QFontMetrics(self.font_num).horizontalAdvance(total_text) + 20
+    def _paint_row(self, p: QPainter, rank: int, r: dict, y: int, w: int,
+                   dpr: float, muted: bool = False) -> None:
+        wash, rail, tempo = class_triple(skilldb.COLOURS.get(r.get("cls", "")))
+        cur = self._anim.get(r["name"], [r.get("bar", 0.0), 0.0])
+        bar_w = int(w * max(0.0, min(1.0, cur[0])))
+        body_h = self.ROW_H - self.RAIL
+        rail_y = snap(y + body_h, dpr)
+        rail_h = snap(self.RAIL, dpr)
 
-        hint = dict(TOOLBAR + (("menu", "Ещё"), ("close", "Выход"))).get(
-            self._hot.partition(":")[2] if self._hot.startswith("btn:") else "")
-        if hint:
-            status, colour = hint, TEXT
-        elif snap.get("paused"):
-            status, colour = "на паузе", ACCENT
-        else:
-            dur = snap.get("duration", 0)
-            status = (f"{dur // 3600}:{dur // 60 % 60:02d}:{dur % 60:02d}" if dur >= 3600
-                      else f"{dur // 60}:{dur % 60:02d}")
-            n = len(snap.get("rows", []))
-            if n:
-                status += f"   {n} {_plural(n, 'игрок', 'игрока', 'игроков')}"
-            colour = TEXT_FAINT
-        p.setFont(self.font_small)
-        p.setPen(colour)
-        fms = QFontMetrics(self.font_small)
-        p.drawText(QRect(x + 10, top, max(20, w - x - total_w - 10), self.TAB_H),
-                   Qt.AlignRight | Qt.AlignVCenter,
-                   fms.elidedText(status, Qt.ElideRight, max(20, w - x - total_w - 12)))
+        if not muted:
+            p.fillRect(QRect(0, y, bar_w, body_h), wash)
+        if self._hot == f"row:{r['name']}":
+            p.fillRect(QRect(0, y, w, body_h), HOVER)
+        p.fillRect(QRectF(0, rail_y, w, rail_h), TRACK)
+        if not muted:
+            p.fillRect(QRectF(0, rail_y, bar_w, rail_h), rail)
+            tempo_w = int(w * cur[1])
+            if self.snapshot.get("active") and abs(tempo_w - bar_w) >= 3:
+                p.fillRect(QRectF(0, rail_y + 1, tempo_w, snap(1, dpr)), tempo)
+            p.fillRect(QRect(0, y, 3, body_h), ACCENT if r["is_self"] else rail)
 
-        p.setPen(QPen(LINE, 1))
-        p.drawLine(0, top + self.TAB_H, w, top + self.TAB_H)
-
-    def _paint_row(self, p: QPainter, i: int, r: dict, y: int, w: int) -> None:
-        is_self = r["is_self"]
-        if is_self:
-            p.fillRect(QRect(1, y, w - 2, self.row_h), ROW_SELF_BG)
-
-        bar_w = int((w - 10) * max(0.0, min(1.0, r.get("bar", 0))))
-        # Цвет полосы = цвет класса: строку узнаёшь по цвету, не читая имя.
-        colour = class_colour(r.get("cls", ""), 90 if is_self else 64)
-        if colour is None:
-            colour = BAR_SELF if is_self else BAR_OTHER
-        p.fillRect(QRect(5, y + 2, bar_w, self.row_h - 4), colour)
-        if is_self:
-            p.fillRect(QRect(1, y, 3, self.row_h), ACCENT)      # полоса слева
-        if self.selected == r["name"]:
-            p.setPen(QPen(LINE_STRONG, 1))
-            p.setBrush(Qt.NoBrush)
-            p.drawRect(QRect(4, y + 1, w - 9, self.row_h - 3))
-
-        # Своя строка набрана полужирным, поэтому и мерить её надо тем же
-        # шрифтом — иначе метка класса налезает на ник.
-        font = self.font_self if is_self else self.font_body
-        p.setFont(font)
-        p.setPen(ACCENT if is_self else TEXT)
-        cols_w = sum(cw for _k, cw in self._columns(w))
-        fm = QFontMetrics(font)
-        icon_size = self.row_h - 8
-        icon = class_icon(cfgmod.icons_dir(self.cfg), r.get("cls", ""), icon_size)
-        x_name = 11
+        base = y + self.BASE
+        x = PAD
+        icon = class_icon(cfgmod.icons_dir(self.cfg), r.get("cls", ""), self.ICON, dpr)
         if icon is not None:
-            p.drawPixmap(11, y + 4, icon)
-            x_name = 13 + icon.width()
+            p.drawPixmap(x, y + (body_h - self.ICON) // 2, icon)
+        elif r.get("cls"):
+            self._class_chip(p, x, y + (body_h - 14) // 2, r["cls"], rail)
+        x += self.ICON + GAP
 
+        if not muted:
+            self._txt_right(p, x + 16, base, str(rank), INK2, self.f_small)
+        x += 20
+
+        cols_w = sum(cw for _k, cw in self.columns(w))
+        name_w = max(40, w - PAD - cols_w - x - GAP)
+        font = self.f_self if r["is_self"] else self.f_body
+        fm = QFontMetrics(font)
         mark = "▾ " if self.selected == r["name"] else ""
-        name = fm.elidedText(f"{mark}{i + 1}  {r['display']}", Qt.ElideRight,
-                             max(60, w - 9 - x_name - cols_w))
-        p.drawText(x_name, y + self.row_h - 8, name)
-        # Название класса — только если иконки нет: иначе строка теснится,
-        # а класс и так виден.
-        cls_colour = None if icon is not None else class_colour(r.get("cls", ""))
-        if cls_colour and r.get("cls_name"):
-            x_cls = x_name + 2 + fm.horizontalAdvance(name)
-            room = w - 12 - cols_w - x_cls
-            if room > 30:
-                p.setFont(self.font_small)
-                p.setPen(cls_colour)
-                p.drawText(x_cls, y + self.row_h - 8,
-                           QFontMetrics(self.font_small).elidedText(
-                               r["cls_name"], Qt.ElideRight, room))
+        name = fm.elidedText(mark + r["display"], Qt.ElideRight, name_w)
+        self._txt(p, x, base, name, INK3 if muted else INK, font)
 
-        # Каждая колонка в своей ячейке, а не склейкой в строку: иначе числа
-        # разной длины не выстраиваются по вертикали и таблицу не прочитать.
-        p.setFont(self.font_num)
-        x = w - 10
-        for key, cell_w in reversed(self._columns(w)):
-            x -= cell_w
-            value = self._cell_text(key, r)
-            if not value:
-                continue
-            p.setPen(TEXT_DIM if key in ("pct", "hits", "crit") else TEXT)
-            p.drawText(QRect(x, y, cell_w - 6, self.row_h),
-                       Qt.AlignRight | Qt.AlignVCenter, value)
+        right = w - PAD
+        for key, cw in reversed(self.columns(w)):
+            self._paint_cell(p, key, r, right, base, cw, muted)
+            right -= cw
 
-    def _paint_skills(self, p: QPainter, r: dict, y: int, w: int, bottom: int) -> int:
-        """Разбор по скиллам для раскрытой строки.
+    def _paint_cell(self, p: QPainter, key: str, r: dict, right: int, base: int,
+                    cw: int, muted: bool) -> None:
+        colour = INK3 if muted else INK2
+        if key == "dmg":
+            mant, suf = fmt_ui(r["total"])
+            end = right
+            if suf:
+                end = self._txt_right(p, right, base, suf, colour, self.f_small)
+            self._txt_right(p, end, base, mant, INK3 if muted else INK, self.f_body)
+            return
+        if key == "dps":
+            value = r["dps"] if r["dps"] >= 1 else r.get("avg", 0)
+            if value < 1:
+                self._txt_right(p, right, base, "0", INK_MUTE, self.f_num)
+                return
+            mant, suf = fmt_ui(value)
+            end = right
+            if suf:
+                end = self._txt_right(p, right, base, suf, colour, self.f_small)
+            self._txt_right(p, end, base, mant, colour, self.f_num)
+            return
+        if key == "pct":
+            self._txt_right(p, right, base, f"{r['pct']:.0f}%", colour, self.f_num)
+            return
+        if key == "hits":
+            self._txt_right(p, right, base, str(r["hits"]), colour, self.f_num)
+            return
+        if key == "crit":
+            text = f"{r['crit']:.0f}%" if r.get("crit") is not None else "—"
+            self._txt_right(p, right, base, text, colour, self.f_num)
 
-        У автоатак имени скилла в логе нет вовсе — они идут одной строкой.
-        """
+    def _class_chip(self, p: QPainter, x: int, y: int, code: str, colour: QColor) -> None:
+        """Заглушка без иконок: цвет — не единственный носитель класса."""
+        p.setPen(QPen(colour, 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(x, y, 14, 14), R_CHIP, R_CHIP)
+        f = QFont(self.f_small)
+        f.setPointSize(max(6, f.pointSize() - 1))
+        p.setFont(f)
+        p.drawText(QRect(x, y, 14, 14), Qt.AlignCenter, code[:2].upper())
+
+    def _paint_skills(self, p: QPainter, r: dict, y: int, w: int, bottom: int,
+                      dpr: float) -> int:
         skills = r.get("skills") or []
         auto = max(0, r["total"] - sum(v for _k, v in skills))
         items = list(skills[:6])
         if auto > 0:
             items.append(("автоатака", auto))
         if not items:
-            items = [("разбивки по скиллам нет", 0)]
-        top = max((v for _k, v in items), default=1) or 1
+            return y
+        top_v = max((v for _k, v in items), default=1) or 1
+        _wash, rail, _t = class_triple(skilldb.COLOURS.get(r.get("cls", "")))
+        wash = QColor(rail)
+        wash.setAlpha(38)
 
-        p.setFont(self.font_skill)
-        fm = QFontMetrics(self.font_skill)
+        x0 = PAD + self.ICON + GAP
         icons_dir = cfgmod.skill_icons_dir(self.cfg)
-        icon_size = self.skill_h - 2
+        size = self.SKILL_H - 4
+        fm = QFontMetrics(self.f_small)
+        start = y
         for label, value in items:
-            if y + self.skill_h > bottom:
+            if y + self.SKILL_H > bottom:
                 break
-            p.fillRect(QRect(26, y + 1, int((w - 46) * value / top), self.skill_h - 2), BAR_SKILL)
-            icon = skill_icon(icons_dir, label, icon_size)
-            x_label = 30
+            p.fillRect(QRect(x0, y, int((w - x0 - PAD) * value / top_v),
+                             self.SKILL_H - 1), wash)
+            xi = x0 + 4
+            icon = skill_icon(icons_dir, label, size, dpr)
             if icon is not None:
-                p.drawPixmap(28, y + 1, icon)
-                x_label = 30 + icon.width()
-            p.setPen(TEXT_DIM)
-            p.drawText(x_label, y + self.skill_h - 4,
-                       fm.elidedText(label, Qt.ElideRight, int(w * 0.52)))
-            if value:
-                p.setPen(TEXT_FAINT)
-                p.drawText(QRect(0, y, w - 11, self.skill_h), Qt.AlignRight | Qt.AlignVCenter,
-                           f"{fmt(value)}   {100.0 * value / (r['total'] or 1):.0f}%")
-            y += self.skill_h
+                p.drawPixmap(xi, y + 2, icon)
+                xi += size + 4
+            base = y + fm.ascent() + 2
+            self._txt(p, xi, base, fm.elidedText(label, Qt.ElideRight, int(w * 0.42)),
+                      INK2, self.f_small)
+            right = w - PAD
+            right = self._txt_right(p, right, base, f"{100.0 * value / (r['total'] or 1):.0f}%",
+                                    INK3, self.f_small) - GAP
+            mant, suf = fmt_ui(value)
+            self._txt_right(p, right, base, mant + suf, INK2, self.f_small)
+            y += self.SKILL_H
+        p.fillRect(QRectF(snap(x0 - 4, dpr), start, snap(1, dpr), y - start), HAIR)
         return y
 
-    def _paint_footer(self, p: QPainter, w: int, h: int, snap: dict) -> None:
-        top = h - self.FOOTER_H
-        if not self.cfg.get("transparent"):
-            p.fillRect(QRect(0, top, w, self.FOOTER_H), BG_STRIP)
-        p.setPen(QPen(LINE, 1))
-        p.drawLine(0, top, w, top)
+    # -- пусто и подвал -----------------------------------------------------
 
-        loot = snap.get("loot", {})
-        parts = []
-        for key, label in (("exp", "опыт"), ("ap", "AP"), ("kinah_in", "кинах")):
-            if loot.get(key):
-                parts.append(f"{label} {fmt(loot[key])}")
-        if loot.get("kills"):
-            parts.append(f"убито {loot['kills']}")
-        if loot.get("pvp_kills"):
-            parts.append(f"PvP {loot['pvp_kills']}")
-        deaths = loot.get("deaths", 0) + loot.get("pvp_deaths", 0)
-        if deaths:
-            parts.append(f"смертей {deaths}")
+    def _paint_empty(self, p: QPainter, w: int, top: int, bottom: int,
+                     snap_: dict) -> None:
+        msg = snap_.get("error") or ("на паузе — нажмите «Старт»"
+                                     if snap_.get("paused") else "ждём боевых событий…")
+        p.setFont(self.f_small)
+        p.setPen(DANGER if snap_.get("error") else INK3)
+        p.drawText(QRect(PAD * 2, top + 14, w - PAD * 4, 60),
+                   Qt.AlignHCenter | Qt.TextWordWrap, msg)
 
-        p.setFont(self.font_small)
-        p.setPen(TEXT_FAINT)
-        fm = QFontMetrics(self.font_small)
-        p.drawText(11, top + self.FOOTER_H - 6,
-                   fm.elidedText(" · ".join(parts) or "добычи пока нет",
-                                 Qt.ElideRight, w - 70))
-        stats = snap.get("stats", {})
-        if stats.get("read"):
-            p.drawText(QRect(0, top, w - 11, self.FOOTER_H), Qt.AlignRight | Qt.AlignVCenter,
-                       f"{stats.get('parsed', 0)}/{stats['read']}")
+    def _paint_footer(self, p: QPainter, w: int, h: int, snap_: dict,
+                      dpr: float) -> None:
+        top = h - self.FOOT_H
+        p.fillRect(QRectF(0, snap(top - 1, dpr), w, snap(1, dpr)), HAIR)
+        p.fillRect(QRect(0, top, w, self.FOOT_H), self._bg(L2, chrome=True))
+        fm = QFontMetrics(self.f_small)
+        base = top + (self.FOOT_H + fm.ascent() - fm.descent()) // 2
 
-    def _columns(self, w: int) -> list[tuple[str, int]]:
-        """Ширины колонок — по фактическому содержимому, а не по доле окна.
+        if snap_.get("error"):
+            dot, alpha = DANGER, 1.0
+        elif snap_.get("paused"):
+            dot, alpha = ACCENT, 1.0
+        elif snap_.get("active"):
+            dot = LIVE
+            alpha = 0.55 + 0.45 * abs(1.0 - 2.0 * self._pulse)
+        else:
+            dot, alpha = INK3, 1.0
+        c = QColor(dot)
+        c.setAlphaF(alpha)
+        p.setBrush(c)
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(QRect(PAD, top + (self.FOOT_H - 6) // 2, 6, 6))
+        p.setBrush(Qt.NoBrush)
 
-        Доля окна давала абсурд: пять колонок с короткими числами вроде «4»
-        и «0%» забирали 84% ширины, а ник обрезался до «Pocket…». Считаем по
-        самому длинному значению в колонке и оставляем нику не меньше трети.
-        """
-        known = ("dmg", "dps", "pct", "hits", "crit")
-        order = [c for c in known if c in self.cfg.get("columns", ["dmg", "dps", "pct"])]
-        if not order:
-            return []
-        fm = QFontMetrics(self.font_num)
-        rows = self.snapshot.get("rows", ())
-        widths = []
-        for key in order:
-            longest = max((fm.horizontalAdvance(self._cell_text(key, r)) for r in rows),
-                          default=0)
-            widths.append([key, max(34, longest + 14)])
+        dur = snap_.get("duration", 0)
+        left = (f"{dur // 3600}:{dur // 60 % 60:02d}:{dur % 60:02d}" if dur >= 3600
+                else f"{dur // 60}:{dur % 60:02d}")
+        x = PAD + 6 + GAP
+        self._txt(p, x, base, left, INK2, self.f_small)
+        x += fm.horizontalAdvance(left) + GROUP
 
-        # Ник не должен ужиматься ниже трети окна — иначе таблица нечитаема
-        limit = int((w - 20) * 0.62)
-        total = sum(cw for _k, cw in widths)
-        if total > limit and total:
-            scale = limit / total
-            for pair in widths:
-                pair[1] = max(30, int(pair[1] * scale))
-        return [(k, cw) for k, cw in widths]
+        loot = snap_.get("loot", {})
+        slots = []
+        for key, label in (("exp", "опыт"), ("ap", "AP"), ("kinah", "кинах")):
+            value = loot.get("kinah_in" if key == "kinah" else key)
+            if value:
+                mant, suf = fmt_ui(value)
+                slots.append((label, mant + suf))
+        total_txt = fmt_ui(snap_.get("total", 0))
+        total_w = (QFontMetrics(self.f_num).horizontalAdvance(total_txt[0])
+                   + fm.horizontalAdvance(total_txt[1] + "ИТОГО") + GROUP + GAP)
+        for label, value in slots[:2]:
+            piece = f"{label} {value}"
+            if x + fm.horizontalAdvance(piece) > w - PAD - total_w:
+                break
+            p.setFont(self.f_small)
+            p.setPen(INK3)
+            p.drawText(x, base, label)
+            x += fm.horizontalAdvance(label + " ")
+            self._txt(p, x, base, value, INK2, self.f_small)
+            x += fm.horizontalAdvance(value) + GROUP
 
-    @staticmethod
-    def _cell_text(key: str, r: dict) -> str:
-        if key == "dmg":
-            return fmt(r["total"])
-        if key == "dps":
-            return f"{fmt(r['dps'])}/с" if r["dps"] >= 1 else "·"
-        if key == "pct":
-            return f"{r['pct']:.0f}%"
-        if key == "hits":
-            return str(r["hits"])
-        if key == "crit":
-            return f"{r['crit']:.0f}%" if r.get("crit") is not None else "—"
-        return ""
+        right = w - PAD
+        if total_txt[1]:
+            right = self._txt_right(p, right, base, total_txt[1], INK2, self.f_small)
+        right = self._txt_right(p, right, base, total_txt[0], INK, self.f_num) - GAP
+        p.setFont(self.f_caps)
+        p.setPen(INK3)
+        cw = QFontMetrics(self.f_caps).horizontalAdvance("ИТОГО")
+        p.drawText(right - cw, base, "ИТОГО")
 
     def _paint_grip(self, p: QPainter, w: int, h: int) -> None:
-        p.setPen(QPen(TEXT_FAINT, 1))
+        p.setPen(QPen(INK_MUTE, 1))
         for off in (3, 7):
             p.drawLine(w - off - 4, h - 4, w - 4, h - off - 4)
 
-    # -- мышь --
+    # -- мышь ---------------------------------------------------------------
 
     def _hit_at(self, pos) -> str:
         point = pos.toPoint() if hasattr(pos, "toPoint") else pos
         for name, rect in self._hit:
             if rect.contains(point):
                 return name
+        for rect, row in self._row_rects:
+            if rect.contains(point):
+                return f"row:{row['name']}"
         return ""
 
     def _row_at(self, pos) -> dict | None:
@@ -766,7 +912,7 @@ class Overlay(QWidget):
         if e.button() != Qt.LeftButton:
             return
         hit = self._hit_at(e.position())
-        if hit:
+        if hit.startswith(("metric:", "btn:", "col:")):
             self._activate(hit, e.globalPosition().toPoint())
             return
         row = self._row_at(e.position())
@@ -785,12 +931,12 @@ class Overlay(QWidget):
         if kind == "metric":
             self.set_metric(value)
             return
+        if kind == "col":
+            return
         actions = {
-            "start": self.action_start,
-            "stop": self.action_stop,
+            "play": self.action_toggle_pause,
             "clear": self.action_clear,
             "copy": self.action_copy,
-            "settings": lambda: self.on_settings and self.on_settings(),
             "menu": lambda: self._show_menu(global_pos),
             "close": lambda: self.on_quit and self.on_quit(),
         }
@@ -803,7 +949,7 @@ class Overlay(QWidget):
         if hot != self._hot:
             self._hot = hot
             self.update()
-        if hot or self._row_at(e.position()) is not None:
+        if hot:
             self.setCursor(Qt.PointingHandCursor)
         elif self._in_grip(e.position()):
             self.setCursor(Qt.SizeFDiagCursor)
@@ -829,7 +975,11 @@ class Overlay(QWidget):
 
     def _store_geometry(self) -> None:
         g = self.geometry()
-        self.cfg["window"] = {"x": g.x(), "y": g.y(), "w": g.width(), "h": g.height()}
+        # Ручной ресайз задаёт потолок высоты, автоподгонка — нет
+        if self._resizing:
+            self._max_h = g.height()
+        self.cfg["window"] = {"x": g.x(), "y": g.y(), "w": g.width(),
+                              "h": max(self._max_h, g.height())}
 
     def contextMenuEvent(self, e) -> None:
         self._show_menu(e.globalPos())
@@ -837,11 +987,18 @@ class Overlay(QWidget):
     def _show_menu(self, at) -> None:
         menu = QMenu(self)
         menu.setStyleSheet(
-            "QMenu{background:#141a21;color:#dfe6e8;border:1px solid #2a343c;padding:4px}"
-            "QMenu::item{padding:6px 22px 6px 12px}"
-            "QMenu::item:selected{background:#233040}"
-            "QMenu::separator{height:1px;background:#2a343c;margin:4px 6px}"
+            "QMenu{background:#161B23;color:#E9EEF3;"
+            "border:1px solid rgba(255,255,255,0.09);border-radius:6px;padding:4px}"
+            "QMenu::item{padding:6px 20px 6px 12px;border-radius:4px}"
+            "QMenu::item:selected{background:rgba(255,255,255,0.08)}"
+            "QMenu::separator{height:1px;background:rgba(255,255,255,0.06);margin:4px 6px}"
         )
+        stats = self.snapshot.get("stats", {})
+        if stats.get("read"):
+            act = QAction(f"разобрано {stats.get('parsed', 0)} из {stats['read']} строк",
+                          self, enabled=False)
+            menu.addAction(act)
+            menu.addSeparator()
         for key, label in (("show_loot", "Показывать добычу внизу"),
                            ("click_through", "Клик проходит насквозь"),
                            ("transparent", "Прозрачный фон"),
@@ -877,15 +1034,3 @@ class Overlay(QWidget):
                 return
         area = QGuiApplication.primaryScreen().availableGeometry()
         self.move(area.x() + 60, area.y() + 60)
-
-
-def _plural(n: int, one: str, few: str, many: str) -> str:
-    n = abs(n) % 100
-    if 11 <= n <= 14:
-        return many
-    n %= 10
-    if n == 1:
-        return one
-    if 2 <= n <= 4:
-        return few
-    return many
