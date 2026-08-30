@@ -164,7 +164,8 @@ class SettingsDialog(QDialog):
         form.addRow("Показывать", self.cb_metric)
 
         self.ed_icons = QLineEdit(self.cfg.get("icons_dir", ""))
-        self.ed_icons.setPlaceholderText("пусто — без иконок, только цвет класса")
+        self.ed_icons.setPlaceholderText(cfgmod.icons_dir(self.cfg)
+                                        or "пусто — только цвет класса")
         btn_icons = QPushButton("Обзор…")
         btn_icons.clicked.connect(self._browse_icons)
         btn_auto = QPushButton("Найти набор")
@@ -177,12 +178,15 @@ class SettingsDialog(QDialog):
         holder_ic.setLayout(row_ic)
         form.addRow("Иконки классов", holder_ic)
         form.addRow("", self._hint(
-            "Папка с PNG по имени класса: Ranger.png, Sorc.png, Cleric.png и так "
-            "далее. Программа иконок не содержит и не скачивает — это art NCSoft. "
-            "Кнопка «Найти набор» поищет уже установленные наборы на диске."))
+            "Обычно вписывать ничего не надо: по умолчанию берётся папка icons "
+            "рядом с настройками, её путь показан серым. Поле нужно, только если "
+            "иконки лежат где-то ещё. Файлы называются по классу: Ranger.png, "
+            "Sorc.png, Cleric.png и так далее. Программа иконок не содержит и "
+            "не скачивает — это art NCSoft."))
 
         self.ed_skill_icons = QLineEdit(self.cfg.get("skill_icons_dir", ""))
-        self.ed_skill_icons.setPlaceholderText("пусто — без иконок скиллов")
+        self.ed_skill_icons.setPlaceholderText(cfgmod.skill_icons_dir(self.cfg)
+                                              or "пусто — без иконок скиллов")
         btn_si = QPushButton("Обзор…")
         btn_si.clicked.connect(self._browse_skill_icons)
         row_si = QHBoxLayout()
@@ -192,9 +196,10 @@ class SettingsDialog(QDialog):
         holder_si.setLayout(row_si)
         form.addRow("Иконки скиллов", holder_si)
         form.addRow("", self._hint(
-            "Показываются в разборе по скиллам. Папку наполняет отдельная "
-            "утилита tools/fetch_skill_icons.py — её надо запустить руками. "
-            "Сам метр в сеть не ходит."))
+            "Показываются в разборе по скиллам. Вписывать ничего не надо: путь "
+            "по умолчанию показан серым, туда складывает картинки утилита "
+            "tools/fetch_skill_icons.py. Запускать её надо руками — сам метр "
+            "в сеть не ходит."))
 
         self.ch_loot = QCheckBox("Строка добычи внизу (опыт, AP, кинах, убийства)")
         self.ch_loot.setChecked(self.cfg.get("show_loot", True))

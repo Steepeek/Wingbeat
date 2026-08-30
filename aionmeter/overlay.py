@@ -39,6 +39,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
 from pathlib import Path
 
+from . import config as cfgmod
 from . import hotkeys as hk
 from . import skilldb
 
@@ -591,7 +592,7 @@ class Overlay(QWidget):
         cols_w = sum(cw for _k, cw in self._columns(w))
         fm = QFontMetrics(font)
         icon_size = self.row_h - 8
-        icon = class_icon(self.cfg.get("icons_dir", ""), r.get("cls", ""), icon_size)
+        icon = class_icon(cfgmod.icons_dir(self.cfg), r.get("cls", ""), icon_size)
         x_name = 11
         if icon is not None:
             p.drawPixmap(11, y + 4, icon)
@@ -643,7 +644,7 @@ class Overlay(QWidget):
 
         p.setFont(self.font_skill)
         fm = QFontMetrics(self.font_skill)
-        icons_dir = self.cfg.get("skill_icons_dir", "")
+        icons_dir = cfgmod.skill_icons_dir(self.cfg)
         icon_size = self.skill_h - 2
         for label, value in items:
             if y + self.skill_h > bottom:

@@ -363,6 +363,17 @@ check("скилл без ранга не разбирается",
 check("первый ранг откатывается только к имени без ранга",
       _fi.rank_variants("Ambush I"), ["Ambush I", "Ambush"])
 
+print("настройки: пути к иконкам подставляются сами")
+
+from aionmeter import config as _cfgmod
+_cfg = dict(DEFAULTS)
+check("явный путь имеет приоритет",
+      _cfgmod.icons_dir({"icons_dir": r"D:\my\icons"}), r"D:\my\icons")
+check("несуществующая папка по умолчанию даёт пусто, а не битый путь",
+      _cfgmod._resolve_dir("", "заведомо-нет-такой-папки"), "")
+check("иконки скиллов берут свой каталог, а не каталог классов",
+      _cfgmod.skill_icons_dir({"skill_icons_dir": "X"}), "X")
+
 print("агрегатор: очистка")
 
 m7 = Meter(dict(DEFAULTS))

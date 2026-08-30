@@ -94,6 +94,27 @@ def save(cfg: dict) -> None:
 _CANDIDATE_HINTS = ("aion", "origin", "gameforge", "innova", "ncsoft")
 
 
+def icons_dir(cfg: dict) -> str:
+    """Папка с иконками классов. Пустая настройка = папка по умолчанию.
+
+    Так человеку не нужно ничего вписывать: утилита и установщик кладут
+    файлы туда же, куда программа смотрит.
+    """
+    return _resolve_dir(cfg.get("icons_dir"), "icons")
+
+
+def skill_icons_dir(cfg: dict) -> str:
+    """Папка с иконками скиллов (её наполняет tools/fetch_skill_icons.py)."""
+    return _resolve_dir(cfg.get("skill_icons_dir"), "skillicons")
+
+
+def _resolve_dir(configured: str | None, default_name: str) -> str:
+    if configured:
+        return configured
+    path = config_dir() / default_name
+    return str(path) if path.is_dir() else ""
+
+
 def resolve_log_path(cfg: dict) -> str:
     if cfg.get("log_path"):
         return cfg["log_path"]
