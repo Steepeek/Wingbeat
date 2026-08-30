@@ -697,11 +697,32 @@ class Overlay(QWidget):
                        f"{stats.get('parsed', 0)}/{stats['read']}")
 
     def _columns(self, w: int) -> list[tuple[str, int]]:
-        share = {"dmg": 0.21, "dps": 0.19, "pct": 0.13, "hits": 0.16, "crit": 0.15}
-        active = [c for c in self.cfg.get("columns", ["dmg", "dps", "pct"]) if c in share]
-        order = [c for c in ("dmg", "dps", "pct", "hits", "crit") if c in active]
-        avail = w - 20
-        return [(c, max(34, int(avail * share[c]))) for c in order]
+        """Ширины колонок — по фактическому содержимому, а не по доле окна.
+
+        Доля окна давала абсурд: пять колонок с короткими числами вроде «4»
+        и «0%» забирали 84% ширины, а ник обрезался до «Pocket…». Считаем по
+        самому длинному значению в колонке и оставляем нику не меньше трети.
+        """
+        known = ("dmg", "dps", "pct", "hits", "crit")
+        order = [c for c in known if c in self.cfg.get("columns", ["dmg", "dps", "pct"])]
+        if not order:
+            return []
+        fm = QFontMetrics(self.font_num)
+        rows = self.snapshot.get("rows", ())
+        widths = []
+        for key in order:
+            longest = max((fm.horizontalAdvance(self._cell_text(key, r)) for r in rows),
+                          default=0)
+            widths.append([key, max(34, longest + 14)])
+
+        # Ник не должен ужиматься ниже трети окна — иначе таблица нечитаема
+        limit = int((w - 20) * 0.62)
+        total = sum(cw for _k, cw in widths)
+        if total > limit and total:
+            scale = limit / total
+            for pair in widths:
+                pair[1] = max(30, int(pair[1] * scale))
+        return [(k, cw) for k, cw in widths]
 
     @staticmethod
     def _cell_text(key: str, r: dict) -> str:
@@ -845,9 +866,17 @@ class Overlay(QWidget):
             self.update()
 
     def ensure_on_screen(self) -> None:
+        """Возвращает окно на экран, если оно осталось за границей.
+
+        Проверяем ВСЕ мониторы: окно на втором экране имеет отрицательный x
+        и по одному лишь главному экрану выглядело бы потерянным.
+        """
+        geo = self.geometry()
+        for screen in QGuiApplication.screens():
+            if screen.availableGeometry().intersects(geo):
+                return
         area = QGuiApplication.primaryScreen().availableGeometry()
-        if not area.intersects(self.geometry()):
-            self.move(area.x() + 60, area.y() + 60)
+        self.move(area.x() + 60, area.y() + 60)
 
 
 def _plural(n: int, one: str, few: str, many: str) -> str:

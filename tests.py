@@ -363,6 +363,30 @@ check("скилл без ранга не разбирается",
 check("первый ранг откатывается только к имени без ранга",
       _fi.rank_variants("Ambush I"), ["Ambush I", "Ambush"])
 
+print("настройки: чтение конфига")
+
+import codecs, json as _json, os as _os, tempfile as _tf
+_tmpcfg = Path(_tf.mkdtemp(prefix="aionmeter-cfg-"))
+_old_appdata = _os.environ.get("APPDATA")
+_os.environ["APPDATA"] = str(_tmpcfg)
+try:
+    from aionmeter import config as _c
+    _path = _c.config_path()
+    _path.parent.mkdir(parents=True, exist_ok=True)
+    _body = _json.dumps({"dps_window": 42, "metric": "heal"}, ensure_ascii=False)
+    # Блокнот и PowerShell пишут UTF-8 с BOM — конфиг должен читаться и так
+    _path.write_bytes(codecs.BOM_UTF8 + _body.encode("utf-8"))
+    _loaded = _c.load()
+    check("конфиг с BOM читается, а не теряется", _loaded["dps_window"], 42)
+    check("остальные ключи берутся из умолчаний",
+          _loaded["active_gap"], DEFAULTS["active_gap"])
+    _path.write_text("{ это не json", "utf-8")
+    check("битый конфиг не роняет запуск", _c.load()["dps_window"],
+          DEFAULTS["dps_window"])
+finally:
+    if _old_appdata is not None:
+        _os.environ["APPDATA"] = _old_appdata
+
 print("настройки: пути к иконкам подставляются сами")
 
 from aionmeter import config as _cfgmod
@@ -373,6 +397,36 @@ check("несуществующая папка по умолчанию даёт 
       _cfgmod._resolve_dir("", "заведомо-нет-такой-папки"), "")
 check("иконки скиллов берут свой каталог, а не каталог классов",
       _cfgmod.skill_icons_dir({"skill_icons_dir": "X"}), "X")
+
+print("агрегатор: мобы, петы и PvP")
+
+from aionmeter.aggregate import is_player_name
+check("ник игрока — одно слово", is_player_name("Steepeek"), True)
+check("имя с пробелом игроком не считается", is_player_name("Ulgorn Raider"), False)
+
+m19 = Meter(dict(DEFAULTS))
+m19.cfg["scope"] = "all"
+m19.feed(parse("2026.08.29 19:00:00", "Ulgorn Raider inflicted 900 damage on Somebody."))
+m19.feed(parse("2026.08.29 19:00:01", "Steepeek inflicted 100 damage on Mob."))
+check("моб в таблицу урона не попадает",
+      [r["display"] for r in m19.snapshot(DAMAGE)["rows"]], ["Steepeek"])
+m19.cfg["hide_mobs"] = False
+check("с выключенным фильтром моб виден",
+      len(m19.snapshot(DAMAGE)["rows"]), 2)
+
+# В PvP опыт даётся и за убитого игрока — мобом его считать нельзя
+m20 = Meter(dict(DEFAULTS))
+m20.cfg["scope"] = "all"
+m20.feed(parse("2026.08.29 19:00:00", "You have gained 500 XP from Enemyguy."))
+m20.feed(parse("2026.08.29 19:00:01", "Enemyguy inflicted 300 damage on Ally."))
+check("убитый в PvP игрок остаётся в таблице",
+      [r["display"] for r in m20.snapshot(DAMAGE)["rows"]], ["Enemyguy"])
+check("но опыт за него засчитан", m20.snapshot(DAMAGE)["loot"]["exp"], 500)
+
+m21 = Meter(dict(DEFAULTS))
+m21.cfg["scope"] = "all"
+m21.feed(parse("2026.08.29 19:00:00", "You have gained 500 XP from Ulgorn Raider."))
+check("моб из строки опыта запоминается как моб", "Ulgorn Raider" in m21.mobs, True)
 
 print("агрегатор: очистка")
 

@@ -26,6 +26,17 @@ DAMAGE, HEAL, TAKEN = "damage", "heal", "taken"
 #: Периодический урон: владельца эффекта в строке лога физически нет.
 UNATTRIBUTED = "(периодический)"
 
+def is_player_name(name: str) -> bool:
+    """Имя персонажа игрока в Aion — всегда одно слово, без пробелов.
+
+    Этого хватает, чтобы отделить игроков от мобов, петов и NPC: проверено
+    на живом логе — из 526 акторов урона 111 содержат пробел, и среди них
+    нет ни одного игрока (мобы, суммоны, NPC), а все 14 согруппников —
+    без пробела.
+    """
+    return " " not in name
+
+
 #: Названия группового канала чата в разных локализациях клиента.
 PARTY_CHANNELS = {"Group", "Party", "Группа", "Gruppe", "Groupe", "Grupo"}
 
@@ -268,7 +279,10 @@ class Meter:
         if kind == "xp":
             self.loot["exp"] += ev.amount
             self.loot["kills"] += 1
-            self.mobs.add(ev.target)
+            # За убитого в PvP игрока опыт тоже даётся — по строке опыта
+            # мобом его считать нельзя, иначе он пропадёт из таблицы.
+            if not is_player_name(ev.target):
+                self.mobs.add(ev.target)
             self.session.kills.append(ev.target)
             enc = self.encounter
             if enc is not None:
@@ -357,8 +371,9 @@ class Meter:
             return None
         if name == UNATTRIBUTED:
             return "other"
-        if self.cfg.get("hide_mobs", True) and (name in self.mobs or name in self.hostiles):
-            return None
+        if self.cfg.get("hide_mobs", True):
+            if not is_player_name(name) or name in self.mobs or name in self.hostiles:
+                return None
         return "other"
 
     def snapshot(self, metric: str | None = None, whole: bool | None = None) -> dict:

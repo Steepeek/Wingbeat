@@ -70,7 +70,10 @@ def load() -> dict:
     p = config_path()
     if p.exists():
         try:
-            saved = json.loads(p.read_text("utf-8"))
+            # utf-8-sig, а не utf-8: Блокнот и PowerShell пишут UTF-8 с BOM,
+            # и на обычном utf-8 разбор падает — настройки молча теряются,
+            # программа откатывается на значения по умолчанию.
+            saved = json.loads(p.read_text("utf-8-sig"))
         except (OSError, ValueError):
             saved = {}
         for k, v in saved.items():
