@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from . import skilldb
 from .parser import SELF
 
-DAMAGE, HEAL, TAKEN = "damage", "heal", "taken"
+DAMAGE, HEAL, TAKEN, LOOT = "damage", "heal", "taken", "loot"
 
 #: Периодический урон: владельца эффекта в строке лога физически нет.
 UNATTRIBUTED = "(периодический)"
@@ -433,6 +433,37 @@ class Meter:
                 return None
         return "other"
 
+    def _loot_rows(self) -> list[dict]:
+        """Строки для вкладки «Добыча»: игрок -> сколько предметов подобрал.
+
+        Раскрытие строки переиспользует тот же механизм, что и разбор по
+        скиллам: список пар (подпись, количество). Названия резолвятся здесь,
+        чтобы отрисовка не знала про базу предметов.
+        """
+        from . import itemdb
+        rows = []
+        for who, bag in self.items.items():
+            if not bag:
+                continue
+            entries, quality = [], {}
+            for raw, count in bag.most_common():
+                item_id = ""
+                if raw.startswith("[item:"):
+                    item_id = raw[6:].split(";", 1)[0]
+                name, qual, _grp = itemdb.lookup(item_id) if item_id else ("", "", "")
+                label = name or (f"предмет {item_id}" if item_id else raw)
+                entries.append((label, count))
+                quality[label] = qual
+            rows.append({
+                "name": who, "display": who, "total": sum(bag.values()),
+                "hits": len(bag), "dps": 0.0, "avg": 0.0, "crit": None, "max": 0,
+                "cls": self.actor_class(who), "section": "party",
+                "cls_name": skilldb.CLASSES.get(self.actor_class(who), ""),
+                "is_self": who == SELF, "is_party": who in self.party,
+                "skills": entries, "quality": quality,
+            })
+        return rows
+
     def snapshot(self, metric: str | None = None, whole: bool | None = None) -> dict:
         cfg = self.cfg
         metric = metric or cfg.get("metric", DAMAGE)
@@ -442,8 +473,8 @@ class Meter:
         window = cfg["dps_window"]
         now = self.last_ts
 
-        rows = []
-        if enc is not None:
+        rows = self._loot_rows() if metric == LOOT else []
+        if enc is not None and metric != LOOT:
             for name, a in enc.actors[metric].items():
                 section = self.section_of(name)
                 if section is None:

@@ -21,7 +21,6 @@ from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 from aionmeter import config as cfgmod
 from aionmeter.engine import Engine
-from aionmeter.loot_window import LootWindow
 from aionmeter.overlay import Overlay, make_icon
 from aionmeter.settings_dialog import SettingsDialog
 
@@ -36,10 +35,8 @@ class App:
 
         self.cfg = cfgmod.load()
         self.engine = Engine(self.cfg)
-        self.loot = LootWindow(self.engine, self.cfg)
         self.overlay = Overlay(self.engine, self.cfg,
-                               on_settings=self.open_settings, on_quit=self.quit,
-                               on_loot=self.open_loot)
+                               on_settings=self.open_settings, on_quit=self.quit)
         self.overlay.ensure_on_screen()
         self.overlay.show()
         self.overlay.apply_window_flags()
@@ -61,7 +58,6 @@ class App:
         menu.addAction("Очистить", self.overlay.action_clear)
         menu.addAction("Клик насквозь", self.overlay.action_toggle_click)
         menu.addSeparator()
-        menu.addAction("Добыча…", self.open_loot)
         menu.addAction("Настройки…", self.open_settings)
         menu.addAction("Выход", self.quit)
         self.tray.setContextMenu(menu)
@@ -69,18 +65,6 @@ class App:
             lambda reason: self.overlay.action_toggle_hide()
             if reason == QSystemTrayIcon.Trigger else None)
         self.tray.show()
-
-    def open_loot(self) -> None:
-        self.loot.engine = self.engine
-        self.loot.show()
-        self.loot.raise_()
-        self.loot.activateWindow()
-        if not hasattr(self, "_loot_timer"):
-            from PySide6.QtCore import QTimer
-            self._loot_timer = QTimer(self.qt)
-            self._loot_timer.timeout.connect(
-                lambda: self.loot.isVisible() and self.loot.update())
-            self._loot_timer.start(1000)
 
     def _warn_hotkeys(self) -> None:
         """Занятое сочетание не срабатывает молча — про это надо сказать сразу,
@@ -148,7 +132,6 @@ class App:
         if self.overlay.hotkeys:
             self.overlay.hotkeys.unregister_all()
         self.engine.stop()
-        self.loot.close()
         self.tray.hide()
         self.qt.quit()
 

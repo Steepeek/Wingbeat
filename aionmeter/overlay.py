@@ -45,6 +45,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
 from . import config as cfgmod
 from . import hotkeys as hk
+from . import itemdb
 from . import skilldb
 from .aggregate import UNATTRIBUTED
 from .theme import (ACCENT, ALPHA_GLASS, ALPHA_GLASS_CHROME, DANGER, EDGE_DARK,
@@ -62,8 +63,10 @@ WS_EX_NOACTIVATE = 0x08000000
 HWND_TOPMOST = -1
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
 
-METRIC_TABS = (("damage", "Урон"), ("heal", "Хил"), ("taken", "Получено"))
-METRIC_TITLE = {"damage": "Урон", "heal": "Хил", "taken": "Полученный урон"}
+METRIC_TABS = (("damage", "Урон"), ("heal", "Хил"), ("taken", "Получено"),
+               ("loot", "Добыча"))
+METRIC_TITLE = {"damage": "Урон", "heal": "Хил", "taken": "Полученный урон",
+                "loot": "Добыча"}
 
 #: Заголовки колонок под каждую вкладку. Потолок — 6 символов: длиннее не
 #: влезает в узкое окно, а обрезанный заголовок хуже отсутствующего.
@@ -71,7 +74,10 @@ CAPTIONS = {
     "damage": {"dmg": "УРОН", "dps": "DPS", "pct": "%", "hits": "УД.", "crit": "КР."},
     "heal": {"dmg": "ХИЛ", "dps": "HPS", "pct": "%", "hits": "КАСТ", "crit": "КР."},
     "taken": {"dmg": "УРОН", "dps": "DPS", "pct": "%", "hits": "УД.", "crit": "КР."},
+    "loot": {"dmg": "ШТ.", "dps": "", "pct": "%", "hits": "ВИДОВ", "crit": ""},
 }
+#: На вкладке добычи нет ни DPS, ни критов — там считают предметы.
+LOOT_COLUMNS = ("dmg", "pct", "hits")
 COL_ORDER = ("dmg", "dps", "pct", "hits", "crit")
 
 #: Эталонные значения для замера ширины колонки. Меряем ОДИН раз по ним, а
@@ -155,14 +161,12 @@ def make_icon() -> QIcon:
 
 
 class Overlay(QWidget):
-    def __init__(self, engine, cfg: dict, on_settings=None, on_quit=None,
-                 on_loot=None):
+    def __init__(self, engine, cfg: dict, on_settings=None, on_quit=None):
         super().__init__(None)
         self.engine = engine
         self.cfg = cfg
         self.on_settings = on_settings
         self.on_quit = on_quit
-        self.on_loot = on_loot
         self.snapshot: dict = {"rows": [], "loot": {}, "total": 0, "duration": 0,
                                "metric": cfg.get("metric", "damage"), "stats": {}}
         self.selected = ""
@@ -259,9 +263,10 @@ class Overlay(QWidget):
         Ник важнее любой числовой колонки: строку, где от имени осталось
         «Ste…», читать невозможно, а доля и удары — справочные величины.
         """
-        active = [c for c in COL_ORDER
-                  if c in self.cfg.get("columns", ["dmg", "dps", "pct"])
-                  and c in self._colw]
+        wanted = self.cfg.get("columns", ["dmg", "dps", "pct"])
+        if self.cfg.get("metric") == "loot":
+            wanted = LOOT_COLUMNS
+        active = [c for c in COL_ORDER if c in wanted and c in self._colw]
         if w is None:
             return [(c, self._colw[c]) for c in active]
         cached = self._colcache.get(w)
@@ -391,6 +396,7 @@ class Overlay(QWidget):
     def set_metric(self, metric: str) -> None:
         self.cfg["metric"] = metric
         self.selected = ""
+        self._colcache.clear()
         self._measure_columns()
         self._refresh()
 
@@ -695,6 +701,10 @@ class Overlay(QWidget):
                     cw: int, muted: bool) -> None:
         colour = INK3 if muted else INK2
         if key == "dmg":
+            if self.cfg.get("metric") == "loot":
+                self._txt_right(p, right, base, str(r["total"]),
+                                INK3 if muted else INK, self.f_body)
+                return
             mant, suf = fmt_ui(r["total"])
             end = right
             if suf:
@@ -734,11 +744,15 @@ class Overlay(QWidget):
 
     def _paint_skills(self, p: QPainter, r: dict, y: int, w: int, bottom: int,
                       dpr: float) -> int:
+        loot_mode = self.cfg.get("metric") == "loot"
         skills = r.get("skills") or []
-        auto = max(0, r["total"] - sum(v for _k, v in skills))
-        items = list(skills[:6])
-        if auto > 0:
-            items.append(("автоатака", auto))
+        if loot_mode:
+            items = list(skills[:12])
+        else:
+            auto = max(0, r["total"] - sum(v for _k, v in skills))
+            items = list(skills[:6])
+            if auto > 0:
+                items.append(("автоатака", auto))
         if not items:
             return y
         top_v = max((v for _k, v in items), default=1) or 1
@@ -762,13 +776,21 @@ class Overlay(QWidget):
                 p.drawPixmap(xi, y + 2, icon)
                 xi += size + 4
             base = y + fm.ascent() + 2
-            self._txt(p, xi, base, fm.elidedText(label, Qt.ElideRight, int(w * 0.42)),
-                      INK2, self.f_small)
+            colour = INK2
+            if loot_mode:
+                qual = (r.get("quality") or {}).get(label, "")
+                colour = QColor(itemdb.QUALITY_COLOURS.get(qual, "#E9EEF3"))                     if qual else INK3
+            self._txt(p, xi, base, fm.elidedText(label, Qt.ElideRight, int(w * 0.46)),
+                      colour, self.f_small)
             right = w - PAD
-            right = self._txt_right(p, right, base, f"{100.0 * value / (r['total'] or 1):.0f}%",
-                                    INK3, self.f_small) - GAP
-            mant, suf = fmt_ui(value)
-            self._txt_right(p, right, base, mant + suf, INK2, self.f_small)
+            if loot_mode:
+                self._txt_right(p, right, base, f"x{value}", INK2, self.f_small)
+            else:
+                right = self._txt_right(
+                    p, right, base, f"{100.0 * value / (r['total'] or 1):.0f}%",
+                    INK3, self.f_small) - GAP
+                mant, suf = fmt_ui(value)
+                self._txt_right(p, right, base, mant + suf, INK2, self.f_small)
             y += self.SKILL_H
         p.fillRect(QRectF(snap(x0 - 4, dpr), start, snap(1, dpr), y - start), HAIR)
         return y
@@ -966,8 +988,6 @@ class Overlay(QWidget):
             act = QAction(label, self, checkable=True, checked=bool(self.cfg.get(key)))
             act.triggered.connect(lambda _c, k=key: self._toggle_cfg(k))
             menu.addAction(act)
-        menu.addSeparator()
-        menu.addAction("Добыча…", lambda: self.on_loot and self.on_loot())
         menu.addSeparator()
         menu.addAction("Скрыть окно", self.action_toggle_hide)
         menu.addAction("Настройки…", lambda: self.on_settings and self.on_settings())
