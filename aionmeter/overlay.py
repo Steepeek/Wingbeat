@@ -155,12 +155,14 @@ def make_icon() -> QIcon:
 
 
 class Overlay(QWidget):
-    def __init__(self, engine, cfg: dict, on_settings=None, on_quit=None):
+    def __init__(self, engine, cfg: dict, on_settings=None, on_quit=None,
+                 on_loot=None):
         super().__init__(None)
         self.engine = engine
         self.cfg = cfg
         self.on_settings = on_settings
         self.on_quit = on_quit
+        self.on_loot = on_loot
         self.snapshot: dict = {"rows": [], "loot": {}, "total": 0, "duration": 0,
                                "metric": cfg.get("metric", "damage"), "stats": {}}
         self.selected = ""
@@ -171,8 +173,6 @@ class Overlay(QWidget):
         self._row_rects: list[tuple[QRect, dict]] = []
         self._anim: dict[str, list[float]] = {}
         self._pulse = 0.0
-        self._max_h = int(cfg["window"]["h"])   # потолок = то, что растянул человек
-        self._shrink_after = 0
         self.hotkeys: hk.HotkeyManager | None = None
 
         self.setWindowFlags(
@@ -420,43 +420,7 @@ class Overlay(QWidget):
 
     def _refresh(self) -> None:
         self.snapshot = self.engine.snapshot()
-        self._fit_height()
         self.update()
-
-    def _content_h(self) -> int:
-        rows = self.snapshot.get("rows", ())
-        n = len(rows)
-        extra = 0
-        for r in rows:
-            if self.selected == r["name"]:
-                skills = len(r.get("skills") or [])
-                auto = r["total"] - sum(v for _k, v in (r.get("skills") or []))
-                extra += (min(6, skills) + (1 if auto > 0 else 0)) * self.SKILL_H
-        if not n:
-            return self.chrome_h + 70
-        return self.chrome_h + n * self.ROW_H + extra + 2
-
-    def _fit_height(self) -> None:
-        """Высота по содержимому с гистерезисом.
-
-        Растём сразу, уменьшаемся только после трёх секунд тишины: иначе
-        окно дышало бы четыре раза в секунду прямо под курсором. Потолок —
-        та высота, которую человек растянул руками.
-        """
-        if self._resizing or self._drag is not None:
-            return
-        want = max(self.minimumHeight(), min(self._max_h, self._content_h()))
-        have = self.height()
-        if want > have:
-            self._shrink_after = 0
-            self.resize(self.width(), want)
-        elif want < have:
-            self._shrink_after += 1
-            if self._shrink_after >= 12:          # 12 тиков по 250 мс = 3 с
-                self._shrink_after = 0
-                self.resize(self.width(), want)
-        else:
-            self._shrink_after = 0
 
     def _tick_anim(self) -> None:
         """Догоняем целевые длины рельса и нити.
@@ -975,11 +939,7 @@ class Overlay(QWidget):
 
     def _store_geometry(self) -> None:
         g = self.geometry()
-        # Ручной ресайз задаёт потолок высоты, автоподгонка — нет
-        if self._resizing:
-            self._max_h = g.height()
-        self.cfg["window"] = {"x": g.x(), "y": g.y(), "w": g.width(),
-                              "h": max(self._max_h, g.height())}
+        self.cfg["window"] = {"x": g.x(), "y": g.y(), "w": g.width(), "h": g.height()}
 
     def contextMenuEvent(self, e) -> None:
         self._show_menu(e.globalPos())
@@ -1006,6 +966,8 @@ class Overlay(QWidget):
             act = QAction(label, self, checkable=True, checked=bool(self.cfg.get(key)))
             act.triggered.connect(lambda _c, k=key: self._toggle_cfg(k))
             menu.addAction(act)
+        menu.addSeparator()
+        menu.addAction("Добыча…", lambda: self.on_loot and self.on_loot())
         menu.addSeparator()
         menu.addAction("Скрыть окно", self.action_toggle_hide)
         menu.addAction("Настройки…", lambda: self.on_settings and self.on_settings())

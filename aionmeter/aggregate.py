@@ -148,6 +148,16 @@ class Meter:
         self.stats = Counter()
         #: Добыча за сессию: опыт, AP, кинах, убийства, смерти.
         self.loot: Counter = Counter()
+        #: Кто последним наложил эффект на цель: (скилл, цель) -> игрок.
+        #: Тик дота автора не содержит вообще, поэтому владельца приходится
+        #: помнить с момента наложения. «Последний наложивший» — это не
+        #: догадка, а механика игры: новый дот перебивает старый, и тикает
+        #: именно последний. Если два сорка бьют одним и тем же скиллом,
+        #: урон уходит тому, кто наложил позже, — как в самой игре.
+        self.effect_owner: dict[tuple[str, str], str] = {}
+        #: Лут: игрок -> предмет -> количество. Плюс броски кубика.
+        self.items: dict[str, Counter] = {}
+        self.rolls: list[tuple[str, int]] = []
         #: Скилл -> код класса. Собирается из клиента, может быть пустой.
         self.skill_class: dict[str, str] = {}
         #: Голоса за класс по каждому актору: скиллы у классов не пересекаются.
@@ -164,7 +174,29 @@ class Meter:
         self.encounter = None
         self.session = Encounter(0, self.cfg)
         self.loot.clear()
+        self.effect_owner.clear()
+        self.items.clear()
+        self.rolls.clear()
         self.pending_close = 0
+
+    def _dot_owner(self, effect: str, target: str) -> str:
+        """Кому приписать тик периодического урона.
+
+        Порядок: точное совпадение по последнему наложившему -> то же без
+        суффикса « Effect» -> единственный игрок подходящего класса в бою.
+        Последнее — потому что часть скиллов (Lava Tsunami, Lava Tempest)
+        тикает вообще без строки прямого удара, и автора взять неоткуда,
+        но класс скилла нам известен из базы клиента.
+        """
+        for key in (effect, effect.removesuffix(" Effect")):
+            owner = self.effect_owner.get((key, target))
+            if owner:
+                return owner
+        code = self.skill_class.get(effect) or             self.skill_class.get(effect.removesuffix(" Effect"))
+        if not code:
+            return ""
+        of_class = [n for n in self.class_votes if self.actor_class(n) == code]
+        return of_class[0] if len(of_class) == 1 else ""
 
     def actor_class(self, name: str) -> str:
         """Код класса по использованным скиллам или '' если не определён."""
@@ -302,14 +334,36 @@ class Meter:
             self._add(HEAL, self._owner(ev.actor), ev.ts, ev.amount, False, ev.skill)
             return
 
+        if kind == "applied":
+            if ev.skill and ev.actor:
+                self.effect_owner[(ev.skill, ev.target)] = ev.actor
+            return
+
+        if kind == "loot_item":
+            self.items.setdefault(ev.actor, Counter())[ev.target] += ev.amount
+            return
+
+        if kind == "roll":
+            self.rolls.append((ev.actor, ev.amount))
+            if len(self.rolls) > 200:
+                del self.rolls[:-200]
+            return
+
         if kind == "dot":
             if ev.amount <= 0:
                 return
+            # Тик по СВОИМ — это входящий урон, а не наш: доты боссов по
+            # группе раньше шли в общий урон и завышали его. Проверяем именно
+            # принадлежность к своим, а не форму имени: односложные имена
+            # мобов («Suga») по форме неотличимы от ников.
+            if ev.target == SELF or ev.target in self.party                     or ev.target in self.party_seen or ev.target in self.party_manual:
+                self._add(TAKEN, self._owner(ev.target), ev.ts, ev.amount, False, "")
+                return
             self._ensure(ev.ts).targets[ev.target] += ev.amount
             self.session.targets[ev.target] += ev.amount
-            # Владельца эффекта в строке физически нет — отдельной строкой,
-            # а не размазываем молча по игрокам.
-            self._add(DAMAGE, UNATTRIBUTED, ev.ts, ev.amount, False, "")
+            owner = self._dot_owner(ev.extra, ev.target)
+            self._add(DAMAGE, self._owner(owner) if owner else UNATTRIBUTED,
+                      ev.ts, ev.amount, False, ev.extra if owner else "")
             return
 
         if kind != "damage" or ev.amount <= 0:
@@ -330,10 +384,13 @@ class Meter:
             self._add(TAKEN, self._owner(ev.target), ev.ts, ev.amount, ev.crit, ev.skill)
             return
 
-        if ev.skill and self.skill_class:
-            code = self.skill_class.get(ev.skill)
-            if code:
-                self.class_votes.setdefault(ev.actor, Counter())[code] += 1
+        if ev.skill:
+            # Запоминаем автора скилла на этой цели: тик дота автора не несёт
+            self.effect_owner[(ev.skill, ev.target)] = ev.actor
+            if self.skill_class:
+                code = self.skill_class.get(ev.skill)
+                if code:
+                    self.class_votes.setdefault(ev.actor, Counter())[code] += 1
 
         enc = self._ensure(ev.ts)
         enc.targets[ev.target] += ev.amount
@@ -391,9 +448,13 @@ class Meter:
                 section = self.section_of(name)
                 if section is None:
                     continue
-                # В боевых строках свой персонаж всегда "You" — в таблице
-                # показываем настоящий ник, если он уже известен.
-                display = self.self_name if (name == SELF and self.self_name) else name
+                # Свой персонаж подписан «You». Ник определяется и хранится
+                # (он нужен, чтобы узнавать себя в строках вида «because
+                # <Ник> used <скилл>»), но в таблицу не подставляется:
+                # определённый ник бывает не тем, если играешь с твинка.
+                display = name
+                if name == SELF and self.self_name and cfg.get("show_own_nick"):
+                    display = self.self_name
                 cls = self.actor_class(name)
                 rows.append({
                     "name": name,
@@ -449,6 +510,8 @@ class Meter:
             "target": enc.dominant if enc else "",
             "kills": len(enc.kills) if enc else 0,
             "loot": dict(self.loot),
+            "items": {who: dict(c) for who, c in self.items.items()},
+            "rolls": list(self.rolls[-20:]),
             "window": window,
             "metric": metric,
             "mode": "session" if whole else "encounter",

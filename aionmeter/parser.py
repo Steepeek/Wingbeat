@@ -127,6 +127,24 @@ RE_DEATH = re.compile(
     r"^(?P<victim>" + NAME + r") (?:was|were) killed by (?P<killer>.+?)'s attack\.$"
 )
 
+# "<Цель> is in the <состояние> state because <Кастер> used <Скилл>."
+# Единственная строка, которая называет автора накладываемого эффекта.
+# Нужна, чтобы приписать тики дота: сам тик автора не содержит.
+RE_STATE = re.compile(
+    r"^" + _CRIT +
+    r"(?P<target>" + NAME + r") is in the .{1,70}? state because "
+    r"(?P<actor>" + NAME + r") used (?P<skill>.+?)\.$")
+
+# Лут. "%0 has acquired %1." — строка группового лута (STR_PARTY_ITEM_WIN).
+RE_LOOT_SELF = re.compile(
+    r"^You have acquired (?:(?P<count>" + NUM + r") )?(?P<item>.+?)\(?s?\)?"
+    r"(?: and stored them in your special cube)?\.$")
+RE_LOOT_OTHER = re.compile(
+    r"^(?P<who>" + NAME + r") has acquired (?P<item>.+?)\.$")
+RE_ROLL = re.compile(
+    r"^(?P<who>" + NAME + r") rolled the dice and got a (?P<value>" + NUM + r")"
+    r"(?: \(max\. " + NUM + r"\))?\.$")
+
 # Состав группы. Точные формулировки из STR_PARTY_* клиента.
 RE_PARTY_JOIN = re.compile(r"^(?P<who>" + NAME + r") has joined your group\.$")
 RE_PARTY_LEAVE = re.compile(
@@ -301,6 +319,25 @@ def parse(ts: str, body: str) -> Event | None:
         m = RE_KINAH_OUT.match(body)
         if m:
             return Event("loot", ts_to_epoch(ts), amount=to_int(m["amount"]), extra="kinah_out")
+
+    if body[:4] == "You " or " has acquired " in body:
+        m = RE_LOOT_SELF.match(body)
+        if m:
+            return Event("loot_item", ts_to_epoch(ts), actor=SELF, target=m["item"],
+                         amount=to_int(m["count"]) or 1)
+        m = RE_LOOT_OTHER.match(body)
+        if m:
+            return Event("loot_item", ts_to_epoch(ts), actor=m["who"],
+                         target=m["item"], amount=1)
+
+    m = RE_STATE.match(body)
+    if m:
+        return Event("applied", ts_to_epoch(ts), actor=m["actor"],
+                     target=m["target"], skill=m["skill"])
+
+    m = RE_ROLL.match(body)
+    if m:
+        return Event("roll", ts_to_epoch(ts), actor=m["who"], amount=to_int(m["value"]))
 
     m = RE_PVP.match(body)
     if m:

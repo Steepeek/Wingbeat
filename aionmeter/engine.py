@@ -8,6 +8,7 @@ from pathlib import Path
 
 from . import config as cfgmod
 from .aggregate import Meter
+from .alerts import Alerts
 from .parser import RE_GLORY, RE_OWN_CHAT, iter_records, parse
 from .tailer import Tailer
 from . import skilldb
@@ -30,6 +31,7 @@ class Engine:
         self.unknown = 0
         self._unknown_fh = None
         self.paused = False
+        self.alerts = Alerts(cfg)
 
     # -- управление --
 
@@ -167,6 +169,8 @@ class Engine:
                     else:
                         self.parsed += 1
                         self.meter.feed(ev)
+                    self.alerts.check(ev.ts if ev else self.meter.last_ts,
+                                      body, ev, self.meter.self_name)
         self._publish()
 
     def _log_unknown(self, body: str) -> None:

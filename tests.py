@@ -121,8 +121,14 @@ check("подделка урона через чат не становится �
       (spoof.kind, spoof.actor, spoof.extra, spoof.amount), ("chat", "Spoofer", "LFG", 0))
 check("реплика в say-канале",
       P("Spoofer: Tamiiko inflicted 999999 damage on X."), None)
-check("крит-префикс на не-уроне",
-      P("Critical Hit!Training Dummy is in the spinning state because Nemme used Body Slice I."), None)
+# Строка наложения эффекта нужна для атрибуции дотов, но уроном не является
+# и крит-префикс не должен залипать в имя цели
+_st = P("Critical Hit!Training Dummy is in the spinning state because Nemme used Body Slice I.")
+check("крит-префикс на не-уроне: это не урон",
+      (_st.kind, _st.amount), ("applied", 0))
+check("крит-префикс не залипает в имя цели",
+      (_st.target, _st.actor, _st.skill),
+      ("Training Dummy", "Nemme", "Body Slice I"))
 check("системная строка", P("You are too far from the target to use that skill."), None)
 check("пустая строка", P(""), None)
 
@@ -311,8 +317,12 @@ m16.feed(parse("2026.08.29 19:00:00",
                "The Glory Points to be deducted for Steepeek are 28."))
 m16.feed(parse("2026.08.29 19:00:01", "You inflicted 100 damage on Mob."))
 row16 = m16.snapshot(DAMAGE)["rows"][0]
-check("в таблице показывается ник, а не «You»",
-      (row16["name"], row16["display"], row16["is_self"]), ("You", "Steepeek", True))
+check("своя строка подписана «You», ник хранится отдельно",
+      (row16["name"], row16["display"], row16["is_self"], m16.self_name),
+      ("You", "You", True, "Steepeek"))
+m16.cfg["show_own_nick"] = True
+check("настройкой можно вернуть ник",
+      m16.snapshot(DAMAGE)["rows"][0]["display"], "Steepeek")
 
 print("агрегатор: класс по скиллам")
 
@@ -427,6 +437,95 @@ m21 = Meter(dict(DEFAULTS))
 m21.cfg["scope"] = "all"
 m21.feed(parse("2026.08.29 19:00:00", "You have gained 500 XP from Ulgorn Raider."))
 check("моб из строки опыта запоминается как моб", "Ulgorn Raider" in m21.mobs, True)
+
+print("агрегатор: доты, лут, сигналы")
+
+# Тик дота автора не содержит. Владельца помним с момента наложения —
+# это не догадка, а механика: новый дот перебивает старый.
+m22 = Meter(dict(DEFAULTS)); m22.cfg["scope"] = "all"
+m22.feed(parse("2026.08.31 19:00:00", "Ann inflicted 500 damage on Mob by using Erosion VI."))
+m22.feed(parse("2026.08.31 19:00:02", "Mob received 300 damage due to the effect of Erosion VI."))
+by = {r["display"]: r["total"] for r in m22.snapshot(DAMAGE)["rows"]}
+check("тик дота приписан тому, кто его наложил", by.get("Ann"), 800)
+check("строки «(периодический)» при этом нет", "(периодический)" in by, False)
+
+# Два сорка одним скиллом: урон уходит последнему наложившему
+m23 = Meter(dict(DEFAULTS)); m23.cfg["scope"] = "all"
+m23.feed(parse("2026.08.31 19:00:00", "Ann inflicted 10 damage on Mob by using Erosion VI."))
+m23.feed(parse("2026.08.31 19:00:01", "Mob received 100 damage due to the effect of Erosion VI."))
+m23.feed(parse("2026.08.31 19:00:02", "Bob inflicted 10 damage on Mob by using Erosion VI."))
+m23.feed(parse("2026.08.31 19:00:03", "Mob received 100 damage due to the effect of Erosion VI."))
+by = {r["display"]: r["total"] for r in m23.snapshot(DAMAGE)["rows"]}
+check("перебитый дот тикает новому владельцу", (by.get("Ann"), by.get("Bob")), (110, 110))
+
+# Строка наложения эффекта тоже называет автора
+m24 = Meter(dict(DEFAULTS)); m24.cfg["scope"] = "all"
+m24.feed(parse("2026.08.31 19:00:00",
+               "Mob is in the burning state because Cid used Flame Cage V."))
+m24.feed(parse("2026.08.31 19:00:01", "Mob received 200 damage due to the effect of Flame Cage V."))
+check("автор берётся и из строки наложения",
+      {r["display"]: r["total"] for r in m24.snapshot(DAMAGE)["rows"]}.get("Cid"), 200)
+
+# Дот босса по ИГРОКУ — это входящий урон, а не наш
+m25 = Meter(dict(DEFAULTS)); m25.cfg["scope"] = "all"
+m25.feed(parse("2026.08.31 19:00:00", "Weisti has joined your group."))
+m25.feed(parse("2026.08.31 19:00:01", "Weisti received 400 damage due to the effect of Lava Tsunami I."))
+check("дот по игроку не попадает в наш урон", m25.snapshot(DAMAGE)["rows"], [])
+check("дот по игроку идёт в «получено»",
+      m25.snapshot("taken")["rows"][0]["total"], 400)
+
+# Прок с годстоуна владельца не имеет вовсе
+m26 = Meter(dict(DEFAULTS)); m26.cfg["scope"] = "all"
+m26.feed(parse("2026.08.31 19:00:00",
+               "Mob received 50 damage due to the effect of Magical Water Damage Effect."))
+check("безымянный прок остаётся отдельной строкой",
+      m26.snapshot(DAMAGE)["rows"][0]["display"], "(периодический)")
+
+# Лут
+m27 = Meter(dict(DEFAULTS)); m27.cfg["scope"] = "all"
+m27.feed(parse("2026.08.31 19:00:00", "You have acquired [item:167000522;ver6;;;;]."))
+m27.feed(parse("2026.08.31 19:00:01", "You have acquired 5 [item:186000010;ver6;;;;]s."))
+m27.feed(parse("2026.08.31 19:00:02", "Weisti has acquired [item:188052667;ver6;;;;]."))
+m27.feed(parse("2026.08.31 19:00:03", "Ivar rolled the dice and got a 87."))
+items = m27.snapshot(DAMAGE)["items"]
+check("свой лут посчитан", sum(items["You"].values()), 6)
+check("лут согруппника посчитан отдельно", sum(items["Weisti"].values()), 1)
+check("бросок кубика записан", m27.snapshot(DAMAGE)["rolls"], [("Ivar", 87)])
+
+print("сигналы")
+
+from aionmeter.alerts import Alerts as _Alerts
+_acfg = {"alerts": {"enabled": True, "cooldown": 0, "sound": "", "duration": 1,
+                    "rules": {"pvp": True, "rift": True, "death": True,
+                              "pvp_kill": True},
+                    "custom": ["сбор в"]}}
+_a = _Alerts(_acfg)
+_a.play = staticmethod(lambda *a, **k: None)      # без звука в тестах
+for _line, _want in (
+        ("Puller inflicted 900 damage on you by using Soul Torrent I.", "pvp"),
+        ("A one-way Rift into Asmodae has appeared.", "rift"),
+        ("You were killed by Puller's attack.", "death"),
+        ("Kaj has defeated Zxsadntlgw.", "pvp_kill"),
+        ("Legion Message: сбор в 20:00", "custom"),
+        ("You inflicted 500 damage on Mob.", ""),
+        ("Steel Rose Veteran inflicted 900 damage on you.", ""),
+):
+    check(f"сигнал: {_line[:38]}", _a.check(1000, _line, parse("2026.08.31 19:00:00", _line)), _want)
+
+_a2 = _Alerts({"alerts": {"enabled": True, "cooldown": 10, "sound": "",
+                          "rules": {"pvp": True}, "custom": []}})
+_a2.play = staticmethod(lambda *a, **k: None)
+_hit = "Puller inflicted 900 damage on you."
+check("первый удар даёт сигнал",
+      _a2.check(100, _hit, parse("2026.08.31 19:00:00", _hit)), "pvp")
+check("следующий в пределах паузы — молчит",
+      _a2.check(105, _hit, parse("2026.08.31 19:00:00", _hit)), "")
+check("после паузы снова срабатывает",
+      _a2.check(115, _hit, parse("2026.08.31 19:00:00", _hit)), "pvp")
+
+_off = _Alerts({"alerts": {"enabled": False}})
+check("выключенные сигналы молчат",
+      _off.check(100, "A one-way Rift into Asmodae has appeared.", None), "")
 
 print("агрегатор: очистка")
 

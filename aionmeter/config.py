@@ -14,6 +14,7 @@ DEFAULTS: dict = {
     "log_path": "",              # переопределение пути к логу; пусто = game_dir/Chat.log
     "encoding": "auto",          # auto | cp1251 | utf-8 | cp1252
     "self_name": "",             # свой ник; пусто = определить автоматически
+    "show_own_nick": False,      # подписывать свою строку ником вместо «You»
 
     # --- расчёт ---
     "dps_window": 10,            # окно "текущего" DPS, секунд
@@ -49,6 +50,16 @@ DEFAULTS: dict = {
         "hide": "Ctrl+Alt+H",
         "copy": "Ctrl+Alt+C",
         "pause": "Ctrl+Alt+P",
+    },
+
+    # Звуковые уведомления. Подробности и почему нет события
+    # «враг рядом» — в aionmeter/alerts.py
+    "alerts": {
+        "enabled": False,
+        "sound": "",
+        "cooldown": 8,
+        "rules": {"pvp": True, "rift": True, "death": True, "pvp_kill": False},
+        "custom": [],
     },
 
     "poll_ms": 250,
@@ -95,6 +106,15 @@ def save(cfg: dict) -> None:
 # --- поиск игры -----------------------------------------------------------
 
 _CANDIDATE_HINTS = ("aion", "origin", "gameforge", "innova", "ncsoft")
+
+
+def alert_sound(cfg: dict) -> str:
+    """Звук сигнала: указанный в настройках либо файл из папки Sound."""
+    chosen = (cfg.get("alerts") or {}).get("sound")
+    if chosen:
+        return chosen
+    from .alerts import default_sound
+    return default_sound()
 
 
 def icons_dir(cfg: dict) -> str:
