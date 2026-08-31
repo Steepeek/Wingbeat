@@ -492,6 +492,54 @@ check("свой лут посчитан", sum(items["You"].values()), 6)
 check("лут согруппника посчитан отдельно", sum(items["Weisti"].values()), 1)
 check("бросок кубика записан", m27.snapshot(DAMAGE)["rolls"], [("Ivar", 87)])
 
+print("строка для игрового чата")
+
+class _FakeEngine:
+    paused = False
+    def __init__(self, snap): self._s = snap
+    def snapshot(self): return self._s
+    def reset(self): pass
+    def set_paused(self, v): pass
+
+
+def _copy_text(rows, metric="damage", duration=134):
+    from PySide6.QtWidgets import QApplication
+    from aionmeter.overlay import Overlay
+    app = QApplication.instance() or QApplication([])
+    snap = {"rows": rows, "metric": metric, "duration": duration, "loot": {},
+            "total": sum(r["total"] for r in rows), "stats": {}}
+    cfg = dict(DEFAULTS); cfg["metric"] = metric
+    ov = Overlay(_FakeEngine(snap), cfg)
+    ov.snapshot = snap
+    return ov.copy_text()
+
+
+def _row(name, total, avg, **kw):
+    base = {"name": name, "display": name, "total": total, "avg": avg, "dps": avg,
+            "pct": 50.0, "hits": 10, "crit": None, "cls": "", "cls_name": "",
+            "is_self": False, "is_party": False, "section": "party", "skills": []}
+    base.update(kw)
+    return base
+
+
+_txt = _copy_text([_row("Steepeek", 8_400_000, 1825), _row("Weisti", 5_580_000, 1800)])
+check("вид строки для чата", _txt,
+      "Урон 2:14 | Steepeek 8.40M (1 825 dps) | Weisti 5.58M (1 800 dps)")
+check("на вкладке хила подпись hps, а не dps",
+      "hps" in _copy_text([_row("Ann", 1000, 50)], metric="heal"), True)
+check("на вкладке добычи пишем штуки и без времени",
+      _copy_text([_row("Ann", 42, 0)], metric="loot"), "Добыча | Ann 42 шт")
+check("периодический урон в чат не идёт",
+      "период" in _copy_text([_row("Ann", 100, 10), _row("(периодический)", 999, 99)]),
+      False)
+check("пустая таблица даёт пустую строку", _copy_text([]), "")
+
+_many = _copy_text([_row(f"Player{i:02d}", 1_000_000 + i, 1000) for i in range(10)])
+check("длинный список режется по лимиту чата",
+      max(len(x) for x in _many.split(chr(10))) <= 240, True)
+check("запись не рвётся пополам",
+      all(x.count("(") == x.count(")") for x in _many.split(chr(10))), True)
+
 print("база предметов")
 
 import importlib.util as _iu

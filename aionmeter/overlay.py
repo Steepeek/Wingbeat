@@ -400,27 +400,55 @@ class Overlay(QWidget):
         self._measure_columns()
         self._refresh()
 
+    #: Лимит строки игрового чата. Берём с запасом: часть символов уходит на
+    #: служебные обёртки, а обрезанная строка теряет хвост молча.
+    CHAT_LIMIT = 240
+
     def action_copy(self) -> None:
-        """Строка для вставки в игровой чат (лимит около 255 символов)."""
-        rows = [r for r in self.snapshot.get("rows", ()) if r["name"] != UNATTRIBUTED]
+        text = self.copy_text()
+        if text:
+            QApplication.clipboard().setText(text)
+
+    def copy_text(self) -> str:
+        """Строка для вставки в игровой чат.
+
+        Вид: «Урон 2:14 | Steepeek 8.40M (1825 dps) | Weisti 5.58M (1800 dps)».
+        Записи разделены вертикальной чертой, номера мест не пишем — порядок
+        и так по убыванию. Числа форматирует fmt_chat: клиент Aion работает
+        в cp1251, и узкий пробел из таблицы туда не проходит.
+        """
+        snap = self.snapshot
+        metric = snap.get("metric", "damage")
+        rows = [r for r in snap.get("rows", ()) if r["name"] != UNATTRIBUTED]
         if not rows:
-            return
-        dur = self.snapshot.get("duration", 0)
-        parts = [f"{METRIC_TITLE.get(self.snapshot.get('metric', 'damage'), 'Урон')} "
-                 f"{dur // 60}:{dur % 60:02d}:"]
-        for i, r in enumerate(rows[:8], 1):
-            parts.append(f"{i}.{r['display']} {fmt_chat(r['total'])} "
-                         f"({fmt_chat(r['avg'])}dps {r['pct']:.0f}%)")
-        lines, line = [], ""
-        for token in parts:
-            if len(line) + len(token) + 1 > 250:
-                lines.append(line)
-                line = token
+            return ""
+
+        dur = snap.get("duration", 0)
+        head = METRIC_TITLE.get(metric, "Урон")
+        if metric != "loot":
+            head += f" {dur // 60}:{dur % 60:02d}"
+
+        entries = []
+        for r in rows[:10]:
+            if metric == "loot":
+                entries.append(f"{r['display']} {r['total']} шт")
             else:
-                line = f"{line} {token}".strip()
+                rate = "hps" if metric == "heal" else "dps"
+                entries.append(f"{r['display']} {fmt_chat(r['total'])} "
+                               f"({fmt_chat(r['avg'])} {rate})")
+
+        # Режем по лимиту чата, не разрывая запись пополам
+        lines, line = [], head
+        for entry in entries:
+            candidate = f"{line} | {entry}"
+            if len(candidate) > self.CHAT_LIMIT:
+                lines.append(line)
+                line = entry
+            else:
+                line = candidate
         if line:
             lines.append(line)
-        QApplication.clipboard().setText("\n".join(lines))
+        return "\n".join(lines)
 
     # -- данные и анимация --------------------------------------------------
 
