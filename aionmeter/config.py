@@ -52,16 +52,6 @@ DEFAULTS: dict = {
         "pause": "Ctrl+Alt+P",
     },
 
-    # Звуковые уведомления. Подробности и почему нет события
-    # «враг рядом» — в aionmeter/alerts.py
-    "alerts": {
-        "enabled": False,
-        "sound": "",
-        "cooldown": 8,
-        "rules": {"pvp": True, "rift": True, "death": True, "pvp_kill": False},
-        "custom": [],
-    },
-
     "poll_ms": 250,
     "backfill_kb": 64,           # сколько хвоста лога читать при старте
 }
@@ -106,15 +96,6 @@ def save(cfg: dict) -> None:
 # --- поиск игры -----------------------------------------------------------
 
 _CANDIDATE_HINTS = ("aion", "origin", "gameforge", "innova", "ncsoft")
-
-
-def alert_sound(cfg: dict) -> str:
-    """Звук сигнала: указанный в настройках либо файл из папки Sound."""
-    chosen = (cfg.get("alerts") or {}).get("sound")
-    if chosen:
-        return chosen
-    from .alerts import default_sound
-    return default_sound()
 
 
 def icons_dir(cfg: dict) -> str:

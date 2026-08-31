@@ -1,18 +1,11 @@
 """Окно добычи: кто что залутал, кинах, броски кубика.
 
-Честная оговорка про «что». В логе предмет записан только идентификатором:
-`You have acquired [item:167000522;ver6;;;;].` Названия там нет никогда —
-проверено на живом логе, 465 разных предметов и ни одного читаемого имени.
+В логе предмет записан только номером: `[item:167000522;ver6;;;;]`. Таблица
+названий лежит в зашифрованном `Data/Items/items.pak`, но те же самые номера
+открытым текстом есть у эмуляторов Aion — оттуда их и берёт утилита
+tools/fetch_item_names.py. На живом логе опознаётся 231 предмет из 234.
 
-Таблица «идентификатор -> название» лежит в `Data/Items/items.pak`, а он на
-приватных серверах зашифрован (OADTENC1). В незашифрованной части клиента
-этих идентификаторов нет вовсе: ни в client_strings_item.xml, ни в item2,
-item3, ни в dic_item — проверено поиском по всему паку.
-
-Поэтому окно показывает то, что достоверно: КТО и СКОЛЬКО предметов взял,
-кинах, и броски кубика. Сам предмет — идентификатором. Если появится
-источник названий, подставить их сюда — десять строк: словарь
-`item_names` и одна замена в `_item_label`.
+Если базу не собирали, окно показывает номера и не ломается.
 """
 
 from __future__ import annotations
@@ -20,9 +13,10 @@ from __future__ import annotations
 import re
 
 from PySide6.QtCore import QRect, Qt
-from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
 from PySide6.QtWidgets import QWidget
 
+from . import itemdb
 from .theme import (ACCENT, GAP, HAIR, INK, INK2, INK3, INK_MUTE, L1, L2, PAD,
                     RULE, fmt_ui)
 
@@ -36,7 +30,6 @@ class LootWindow(QWidget):
         super().__init__(parent)
         self.engine = engine
         self.cfg = cfg
-        self.item_names: dict[str, str] = {}      # задел под источник названий
         self.setWindowTitle("AionMeter — добыча")
         self.setMinimumSize(360, 260)
         self.resize(460, 420)
@@ -54,12 +47,16 @@ class LootWindow(QWidget):
         self.ROW_H = fm.height() + 8
         self.HEAD_H = fm.height() + 10
 
-    def _item_label(self, item: str) -> str:
+    def _item(self, item: str) -> tuple[str, QColor]:
+        """Название и цвет качества. Без базы — номер серым."""
         m = RE_ITEM.search(item)
         if not m:
-            return item
+            return item, INK2
         item_id = m.group(1)
-        return self.item_names.get(item_id, f"предмет {item_id}")
+        name, quality, _group = itemdb.lookup(item_id)
+        if not name:
+            return f"предмет {item_id}", INK3
+        return name, QColor(itemdb.QUALITY_COLOURS.get(quality, "#E9EEF3"))
 
     def showEvent(self, e) -> None:
         self._apply_font()
@@ -105,6 +102,12 @@ class LootWindow(QWidget):
                        "пока никто ничего не подобрал")
             return
 
+        if not itemdb.load():
+            p.setFont(self.f_small)
+            p.setPen(INK3)
+            p.drawText(QRect(PAD, h - 22, w - PAD * 2, 18), Qt.AlignHCenter,
+                       "названия предметов: py tools/fetch_item_names.py")
+
         # по игрокам, сверху тот, кто взял больше
         order = sorted(items.items(), key=lambda kv: -sum(kv[1].values()))
         for who, bag in order:
@@ -130,10 +133,10 @@ class LootWindow(QWidget):
             for item, n in sorted(bag.items(), key=lambda kv: -kv[1])[:12]:
                 if y + fm_small.height() + 3 > h - 4:
                     break
-                p.setPen(INK2)
+                label, colour = self._item(item)
+                p.setPen(colour)
                 p.drawText(PAD + 22, y + fm_small.ascent(),
-                           fm_small.elidedText(self._item_label(item),
-                                               Qt.ElideRight, int(w * 0.6)))
+                           fm_small.elidedText(label, Qt.ElideRight, int(w * 0.6)))
                 if n > 1:
                     p.setPen(INK3)
                     p.drawText(QRect(0, y, w - PAD, fm_small.height() + 3),

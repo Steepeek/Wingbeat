@@ -63,11 +63,6 @@ def main() -> int:
     out = ROOT / "dist" / "AionMeter"
     for extra in ("README.md", "LICENSE"):
         shutil.copy(ROOT / extra, out / extra)
-    # Звук сигнала лежит рядом с программой, а не внутри exe: его можно
-    # заменить своим, не пересобирая
-    sound = ROOT / "Sound"
-    if sound.is_dir():
-        shutil.copytree(sound, out / "Sound", dirs_exist_ok=True)
 
     size = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
     print(f"\nГотово: {out}  ({size / 1024 / 1024:.0f} МБ)")

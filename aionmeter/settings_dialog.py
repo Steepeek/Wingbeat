@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
 
 from . import config as cfgmod
 from . import skilldb
-from .alerts import BUILTIN as ALERT_RULES
 
 STYLE = """
 QDialog, QWidget { background:#161b21; color:#dfe6e8; font-family:'Segoe UI'; font-size:13px; }
@@ -59,7 +58,6 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._tab_calc(), "Расчёт")
         tabs.addTab(self._tab_view(), "Вид")
         tabs.addTab(self._tab_keys(), "Клавиши")
-        tabs.addTab(self._tab_alerts(), "Сигналы")
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Save).setText("Сохранить")
@@ -280,71 +278,6 @@ class SettingsDialog(QDialog):
             "внизу окна будет видно, что зарегистрировать не удалось."))
         return w
 
-    def _tab_alerts(self) -> QWidget:
-        w = QWidget()
-        form = QFormLayout(w)
-        form.setSpacing(9)
-        conf = self.cfg.get("alerts") or {}
-
-        self.ch_alerts = QCheckBox("Подавать звуковой сигнал")
-        self.ch_alerts.setChecked(bool(conf.get("enabled")))
-        form.addRow("", self.ch_alerts)
-
-        self.alert_rules = {}
-        for key, label in ALERT_RULES:
-            ch = QCheckBox(label)
-            ch.setChecked(bool((conf.get("rules") or {}).get(key, key != "pvp_kill")))
-            self.alert_rules[key] = ch
-            form.addRow("", ch)
-        form.addRow("", self._hint(
-            "События «враг рядом» в Chat.log не существует: игра не пишет "
-            "появление игрока чужой фракции. Слова «Enemy» встречаются там "
-            "только как ники. Поэтому сигнал даётся по тому, что в логе есть: "
-            "враг УЖЕ ударил вас или согруппника, либо открылся рифт — штатный "
-            "способ, которым враг попадает в локацию."))
-
-        self.ed_sound = QLineEdit(conf.get("sound", ""))
-        from .alerts import default_sound
-        self.ed_sound.setPlaceholderText(default_sound() or "пусто — системный сигнал")
-        btn_snd = QPushButton("Обзор…")
-        btn_snd.clicked.connect(self._browse_sound)
-        btn_test = QPushButton("Проверить")
-        btn_test.clicked.connect(
-            lambda: __import__("aionmeter.alerts", fromlist=["Alerts"]).Alerts.play(
-                self.ed_sound.text().strip() or default_sound(),
-                self.sp_duration.value()))
-        row = QHBoxLayout()
-        row.addWidget(self.ed_sound, 1)
-        row.addWidget(btn_snd)
-        row.addWidget(btn_test)
-        holder = QWidget()
-        holder.setLayout(row)
-        form.addRow("Звук (.wav)", holder)
-
-        self.sp_duration = self._spin(0, 30, int(conf.get("duration", 3)), " с")
-        form.addRow("Длительность сигнала", self.sp_duration)
-        form.addRow("", self._hint(
-            "0 — проигрывать файл целиком. Сигналы со стоков часто длятся "
-            "десять секунд, а срабатывать могут чаще — получается дрон."))
-
-        self.sp_cooldown = self._spin(1, 120, int(conf.get("cooldown", 15)), " с")
-        form.addRow("Не чаще чем раз в", self.sp_cooldown)
-        form.addRow("", self._hint(
-            "В бою входящий урон идёт очередью — без паузы сигнал превратится "
-            "в непрерывный писк."))
-
-        self.ed_custom = QLineEdit("; ".join(conf.get("custom") or []))
-        self.ed_custom.setPlaceholderText("через точку с запятой; можно регулярки")
-        form.addRow("Свои строки", self.ed_custom)
-        return w
-
-    def _browse_sound(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Звук сигнала", self.ed_sound.text() or str(Path.home()),
-            "Звук (*.wav *.mp3 *.ogg *.wma *.m4a);;Все файлы (*)")
-        if path:
-            self.ed_sound.setText(path)
-
     # -- мелочи --
 
     def _spin(self, lo: int, hi: int, val: int, suffix: str) -> QSpinBox:
@@ -454,14 +387,6 @@ class SettingsDialog(QDialog):
         cfg["show_loot"] = self.ch_loot.isChecked()
         cfg["icons_dir"] = self.ed_icons.text().strip()
         cfg["skill_icons_dir"] = self.ed_skill_icons.text().strip()
-        cfg["alerts"] = {
-            "enabled": self.ch_alerts.isChecked(),
-            "sound": self.ed_sound.text().strip(),
-            "cooldown": self.sp_cooldown.value(),
-            "duration": self.sp_duration.value(),
-            "rules": {k: ch.isChecked() for k, ch in self.alert_rules.items()},
-            "custom": [x.strip() for x in self.ed_custom.text().split(";") if x.strip()],
-        }
         cfg["columns"] = [k for k, ch in self.col_checks.items() if ch.isChecked()]
         cfg["opacity"] = self.sl_opacity.value() / 100
         cfg["font_size"] = self.sp_font.value()

@@ -492,40 +492,33 @@ check("свой лут посчитан", sum(items["You"].values()), 6)
 check("лут согруппника посчитан отдельно", sum(items["Weisti"].values()), 1)
 check("бросок кубика записан", m27.snapshot(DAMAGE)["rolls"], [("Ivar", 87)])
 
-print("сигналы")
+print("база предметов")
 
-from aionmeter.alerts import Alerts as _Alerts
-_acfg = {"alerts": {"enabled": True, "cooldown": 0, "sound": "", "duration": 1,
-                    "rules": {"pvp": True, "rift": True, "death": True,
-                              "pvp_kill": True},
-                    "custom": ["сбор в"]}}
-_a = _Alerts(_acfg)
-_a.play = staticmethod(lambda *a, **k: None)      # без звука в тестах
-for _line, _want in (
-        ("Puller inflicted 900 damage on you by using Soul Torrent I.", "pvp"),
-        ("A one-way Rift into Asmodae has appeared.", "rift"),
-        ("You were killed by Puller's attack.", "death"),
-        ("Kaj has defeated Zxsadntlgw.", "pvp_kill"),
-        ("Legion Message: сбор в 20:00", "custom"),
-        ("You inflicted 500 damage on Mob.", ""),
-        ("Steel Rose Veteran inflicted 900 damage on you.", ""),
-):
-    check(f"сигнал: {_line[:38]}", _a.check(1000, _line, parse("2026.08.31 19:00:00", _line)), _want)
+import importlib.util as _iu
+_sp = _iu.spec_from_file_location(
+    "fetch_items", Path(__file__).parent / "tools" / "fetch_item_names.py")
+_fi = _iu.module_from_spec(_sp)
+_sp.loader.exec_module(_fi)
 
-_a2 = _Alerts({"alerts": {"enabled": True, "cooldown": 10, "sound": "",
-                          "rules": {"pvp": True}, "custom": []}})
-_a2.play = staticmethod(lambda *a, **k: None)
-_hit = "Puller inflicted 900 damage on you."
-check("первый удар даёт сигнал",
-      _a2.check(100, _hit, parse("2026.08.31 19:00:00", _hit)), "pvp")
-check("следующий в пределах паузы — молчит",
-      _a2.check(105, _hit, parse("2026.08.31 19:00:00", _hit)), "")
-check("после паузы снова срабатывает",
-      _a2.check(115, _hit, parse("2026.08.31 19:00:00", _hit)), "pvp")
+_xml = ('<item_templates>'
+        '<item_template id="186000130" name="Crucible Insignia" level="1" '
+        'quality="RARE" item_group="MATERIAL"/>'
+        '<item_template id="100000001" name="Circulus\' Sword" level="1" '
+        'mask="1" item_group="SWORD" quality="UNIQUE"/>'
+        '<item_template id="152000911" name="Magical Aether"/>'
+        '</item_templates>')
+_items = _fi.parse(_xml)
+check("разобрано предметов", len(_items), 3)
+check("название с апострофом не ломает разбор",
+      _items["100000001"][0], "Circulus' Sword")
+check("качество и тип берутся из любого места строки",
+      _items["186000130"][1:], ["RARE", "MATERIAL"])
+check("предмет без качества не теряется", _items["152000911"], ["Magical Aether", "", ""])
 
-_off = _Alerts({"alerts": {"enabled": False}})
-check("выключенные сигналы молчат",
-      _off.check(100, "A one-way Rift into Asmodae has appeared.", None), "")
+from aionmeter import itemdb
+check("у каждого качества есть цвет и название",
+      sorted(itemdb.QUALITY_COLOURS) == sorted(itemdb.QUALITY_NAMES), True)
+check("неизвестный предмет даёт пустое название", itemdb.lookup("нет такого")[0], "")
 
 print("агрегатор: очистка")
 

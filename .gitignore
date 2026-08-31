@@ -13,7 +13,7 @@ skillicons/
 icons/
 *.gif
 
-# звуки сигналов: лицензия стоковых файлов неизвестна
-Sound/*.mp3
-Sound/*.wav
-Sound/*.ogg
+
+# базы, собираемые на машине пользователя из игровых данных
+items.json
+skills.json
