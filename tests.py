@@ -324,6 +324,82 @@ m16.cfg["show_own_nick"] = True
 check("настройкой можно вернуть ник",
       m16.snapshot(DAMAGE)["rows"][0]["display"], "Steepeek")
 
+
+print("парсер: отражение щитом")
+
+# Шаблоны клиента STR_SKILL_SUCC_Reflector_PROTECT_A_to_B / _A_to_ME.
+# Раньше RE_HIT знал только клаузу "by using", и хвост "by reflecting the
+# attack" целиком уезжал в имя цели — цель дробилась, а урон засчитывался.
+e = P("Steepeek inflicted 70 damage on Elite Krotan Officer by reflecting the attack.")
+check("цель отражения разобрана без хвоста",
+      (e.kind, e.actor, e.target, e.amount, e.extra),
+      ("damage", "Steepeek", "Elite Krotan Officer", 70, "reflect"))
+
+e = P("Zero inflicted 168 damage on Seasoned Ulsaruk by reflecting Fang Strike V.")
+check("отражение именованного скилла тоже помечено",
+      (e.target, e.amount, e.extra), ("Seasoned Ulsaruk", 168, "reflect"))
+
+e = P("Weisti inflicted 4" + NBSP + "231 damage on Mob by using Freezing Wind IV.")
+check("обычный удар отражением не помечается", e.extra, "")
+
+
+print("агрегатор: отражение и эхо своего урона")
+
+# На аое Модор клиент печатает всем участникам одно и то же фиктивное число
+# 6 553 601 — больше, чем весь их реальный урон за бой. Замер на живом логе:
+# 20 таких строк переворачивали таблицу целиком.
+m17 = Meter(dict(DEFAULTS))
+m17.cfg["scope"] = "all"
+m17.feed(parse("2026.09.05 00:51:13", "Ally inflicted 1000 damage on Modor."))
+m17.feed(parse("2026.09.05 00:51:14",
+               "Ally inflicted 6" + NBSP + "553" + NBSP + "601 damage on Modor "
+               "by reflecting the attack."))
+check("отражение в урон по умолчанию не идёт",
+      [(r["name"], r["total"]) for r in m17.snapshot(DAMAGE)["rows"]],
+      [("Ally", 1000)])
+
+m18 = Meter(dict(DEFAULTS))
+m18.cfg["scope"] = "all"
+m18.cfg["count_reflect"] = True
+m18.feed(parse("2026.09.05 00:51:14",
+               "Ally inflicted 70 damage on Modor by reflecting the attack."))
+check("настройкой отражение возвращается",
+      m18.snapshot(DAMAGE)["rows"][0]["total"], 70)
+
+# Своё попадание клиент пишет дважды: от первого лица и по нику. На живом
+# логе 359 из 397 строк с ником (90 %) имеют такого близнеца.
+m19 = Meter(dict(DEFAULTS))
+m19.cfg["scope"] = "all"
+m19.feed(parse("2026.09.04 15:06:59",
+               "The Glory Points to be deducted for Steepeek are 28."))
+m19.feed(parse("2026.09.04 15:06:59",
+               "You inflicted 2" + NBSP + "469 damage on Magus by using Rupture Arrow IV."))
+m19.feed(parse("2026.09.04 15:06:59",
+               "Steepeek inflicted 2" + NBSP + "469 damage on Magus by using Rupture Arrow IV."))
+rows19 = m19.snapshot(DAMAGE)["rows"]
+check("эхо своего урона не удваивает и не двоит строку",
+      [(r["name"], r["total"], r["hits"]) for r in rows19],
+      [("You", 2469, 1)])
+
+# А вот два настоящих одинаковых попадания в одну секунду — это два удара.
+m20 = Meter(dict(DEFAULTS))
+m20.cfg["scope"] = "all"
+m20.feed(parse("2026.09.04 15:06:59",
+               "The Glory Points to be deducted for Steepeek are 28."))
+for _ in range(2):
+    m20.feed(parse("2026.09.04 15:06:59", "You inflicted 500 damage on Magus."))
+check("повтор той же формы считается как два удара",
+      [(r["total"], r["hits"]) for r in m20.snapshot(DAMAGE)["rows"]], [(1000, 2)])
+
+# Ник, пришедший без первого лица, всё равно должен лечь в свою строку.
+m21 = Meter(dict(DEFAULTS))
+m21.cfg["scope"] = "all"
+m21.feed(parse("2026.09.04 15:06:59",
+               "The Glory Points to be deducted for Steepeek are 28."))
+m21.feed(parse("2026.09.04 15:07:00", "Steepeek inflicted 300 damage on Magus."))
+check("одиночная запись по нику склеена со своей строкой",
+      [(r["name"], r["total"]) for r in m21.snapshot(DAMAGE)["rows"]], [("You", 300)])
+
 print("агрегатор: класс по скиллам")
 
 m17 = Meter(dict(DEFAULTS))

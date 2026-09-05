@@ -150,8 +150,14 @@ class SettingsDialog(QDialog):
         self.ch_mobs.setChecked(self.cfg.get("hide_mobs", True))
         self.ch_pets = QCheckBox("Урон питомцев приписывать владельцу")
         self.ch_pets.setChecked(self.cfg.get("merge_pets", True))
+        self.ch_reflect = QCheckBox("Считать урон щита-отражателя")
+        self.ch_reflect.setChecked(self.cfg.get("count_reflect", False))
         form.addRow("", self.ch_mobs)
         form.addRow("", self.ch_pets)
+        form.addRow("", self.ch_reflect)
+        form.addRow("", self._hint(
+            "В строках отражения клиент печатает фиктивные числа: на аое Модор "
+            "всем разом пишется по 6 553 601. Включать только для проверки."))
         return w
 
     def _tab_view(self) -> QWidget:
@@ -382,6 +388,7 @@ class SettingsDialog(QDialog):
         cfg["active_gap"] = self.sp_gap.value()
         cfg["hide_mobs"] = self.ch_mobs.isChecked()
         cfg["merge_pets"] = self.ch_pets.isChecked()
+        cfg["count_reflect"] = self.ch_reflect.isChecked()
         cfg["metric"] = self.cb_metric.currentData()
         cfg["transparent"] = self.ch_transparent.isChecked()
         cfg["show_loot"] = self.ch_loot.isChecked()

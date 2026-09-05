@@ -28,6 +28,7 @@ DEFAULTS: dict = {
     "scope": "all",              # показываем всех, кто наносил урон
     "hide_mobs": True,
     "merge_pets": True,          # урон питомцев приписывать владельцу
+    "count_reflect": False,      # считать урон щита-отражателя (числа фиктивны)
     "columns": ["dmg", "dps", "pct", "hits"],
     "max_rows": 12,
     "icons_dir": "",             # папка с иконками классов; пусто = без иконок

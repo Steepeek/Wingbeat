@@ -165,6 +165,11 @@ class Meter:
         #: Ник подтверждён однозначной строкой, а не эвристикой.
         self.self_confirmed = bool(cfg.get("self_name"))
         self._own_chat: Counter = Counter()
+        #: Свои попадания, уже учтённые в текущей секунде: ключ -> форма записи.
+        #: Нужно, чтобы не посчитать дважды одно попадание, записанное и от
+        #: первого лица, и по нику. Живёт ровно одну секунду — см. _is_echo.
+        self._echo: dict[tuple, str] = {}
+        self._echo_ts = 0
 
     # -- служебное --
 
@@ -226,10 +231,45 @@ class Meter:
         self.session.actor(metric, name).add(ts, amount, crit, skill, gap)
 
     def _owner(self, name: str) -> str:
-        """Питомца схлопываем во владельца, если так настроено."""
+        """Питомца схлопываем во владельца, свой ник — в «You».
+
+        Свой урон клиент пишет двумя разными шаблонами: от первого лица
+        («You inflicted N damage on X») и от третьего, по нику
+        («Steepeek inflicted N damage on X»). Без склейки игрок видел себя
+        в таблице дважды — это и есть та самая лишняя строка.
+        """
         if self.cfg.get("merge_pets", True) and name in self.pets:
             return SELF
+        if self.self_name and name == self.self_name:
+            return SELF
         return name
+
+    def _is_echo(self, ev) -> bool:
+        """Второй экземпляр собственного попадания, записанный другой формой.
+
+        В группе одно попадание попадает в лог дважды — и «You inflicted», и
+        «<ник> inflicted», с точностью до значения, цели и скилла. Замер на
+        живом логе: 359 из 397 строк с ником (90 %) имеют такого близнеца.
+        Просто склеить ники мало — урон удвоится.
+
+        Отличаем эхо от настоящего двойного удара по ФОРМЕ записи: повтор
+        той же формы в ту же секунду — это два реальных попадания, а вот
+        та же цифра, пришедшая ДРУГОЙ формой, — эхо. Значение, цель и
+        скилл совпадают у близнецов всегда, поэтому ключа из них хватает.
+        """
+        if not self.self_name:
+            return False
+        if ev.actor != SELF and ev.actor != self.self_name:
+            return False
+        if ev.ts != self._echo_ts:
+            self._echo_ts = ev.ts
+            self._echo.clear()
+        key = (ev.amount, ev.target, ev.skill, ev.crit)
+        seen = self._echo.get(key)
+        if seen is None:
+            self._echo[key] = ev.actor
+            return False
+        return seen != ev.actor
 
     def _close(self) -> None:
         if self.encounter is not None:
@@ -367,6 +407,17 @@ class Meter:
             return
 
         if kind != "damage" or ev.amount <= 0:
+            return
+
+        # Урон щита-отражателя не является уроном игрока, и хуже того — клиент
+        # печатает в этих строках фиктивные числа. На аое Модор («Grendel's
+        # Explosive Temper») ВСЕ участники разом получают ровно 6 553 601, что
+        # больше всего их реального урона за бой. Одна такая строка ломала
+        # таблицу целиком, поэтому по умолчанию отражение не считаем.
+        if ev.extra == "reflect" and not self.cfg.get("count_reflect", False):
+            return
+
+        if self._is_echo(ev):
             return
 
         if ev.incoming:

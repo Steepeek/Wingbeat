@@ -52,13 +52,21 @@ _CRIT = r"(?:(?P<crit>Critical Hit!)[ ]?)?"
 # "Critical Hit!Zero inflicted 1 412 damage on X by using Fang Strike V."
 # "Zero inflicted 508 damage and the rune carve effect on X by using ..."
 # "<X> has inflicted 900 damage on you by using <S>."   (входящий, 'has' + 'you')
+# "Zero inflicted 70 damage on X by reflecting the attack."   (щит-отражатель)
+#
+# Клауза отражения — не украшение. Без неё "by reflecting the attack" целиком
+# уезжало в имя цели: RE_HIT знал только "by using", а target жадно добирал
+# хвост. Шаблоны клиента (STR_SKILL_SUCC_Reflector_PROTECT_*):
+#     [%SkillTarget] inflicted %num0 damage on [%SkillCaster] by reflecting the attack.
+#     [%SkillCaster] inflicted %num0 damage on [%SkillTarget] by reflecting [%SkillName].
 RE_HIT = re.compile(
     r"^" + _CRIT +
     r"(?P<actor>" + NAME + r") (?:has )?inflicted "
     r"(?P<amount>" + NUM + r") (?:critical )?damage"
     r"(?: and the [^.]{1,80}? effect)?"
     r" on (?P<target>.+?)"
-    r"(?: by\s+using (?P<skill>.+?))?\.$"
+    r"(?:(?: by\s+using (?P<skill>.+?))"
+    r"|(?: by reflecting (?P<reflect>.+?)))?\.$"
 )
 
 # "You received 367 damage from Steel Rose Veteran."          (входящий)
@@ -264,6 +272,7 @@ def parse(ts: str, body: str) -> Event | None:
             actor=m["actor"], target=SELF if incoming else target,
             amount=to_int(m["amount"]), skill=m["skill"] or "",
             crit=bool(m["crit"]), incoming=incoming,
+            extra="reflect" if m["reflect"] else "",
         )
 
     m = RE_RECV.match(body)
