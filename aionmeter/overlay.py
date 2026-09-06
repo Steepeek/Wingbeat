@@ -75,7 +75,8 @@ TAB_GLYPH = {"damage": "sword", "heal": "flask", "taken": "shield", "loot": "pou
 
 #: Крупные кнопки действий. Порядок слева направо — по частоте нажатий.
 ACTIONS = (("play", "Старт / пауза"), ("clear", "Сбросить"),
-           ("copy", "В игровой чат"), ("settings", "Настройки"))
+           ("copy", "В игровой чат"), ("shot", "Снимок окна"),
+           ("settings", "Настройки"))
 METRIC_TITLE = {"damage": "Урон", "heal": "Хил", "taken": "Полученный урон",
                 "loot": "Добыча"}
 
@@ -89,6 +90,12 @@ CAPTIONS = {
 }
 #: На вкладке добычи нет ни DPS, ни критов — там считают предметы.
 LOOT_COLUMNS = ("dmg", "pct", "hits")
+#: Сколько видов добычи держим в раскрытой строке. Прокрутка есть,
+#: поэтому потолок нужен только против совсем уж длинных списков.
+LOOT_MAX_ITEMS = 60
+
+#: Подпись строки автоатаки. Вынесена в константу: по ней же ищется иконка.
+AUTOATTACK = "автоатака"
 COL_ORDER = ("dmg", "dps", "pct", "hits", "crit")
 
 #: Эталонные значения для замера ширины колонки. Меряем ОДИН раз по ним, а
@@ -174,6 +181,18 @@ def skill_icon(icons_dir: str, name: str, size: int, dpr: float = 1.0):
     return pm
 
 
+def ui_icon(name: str, size: int, dpr: float = 1.0):
+    """Иконка интерфейса из ассет-пака: kinah, exp, autoattack."""
+    if not name:
+        return None
+    key = ("ui", name, size, round(dpr, 2))
+    if key in _ICON_CACHE:
+        return _ICON_CACHE[key]
+    pm = _from_pack(assets.ui_icon_path(name), size, dpr)
+    _ICON_CACHE[key] = pm
+    return pm
+
+
 def item_icon(item_id: str, size: int, dpr: float = 1.0):
     """Иконка предмета из ассет-пака по номеру."""
     if not item_id:
@@ -211,6 +230,13 @@ class Overlay(QWidget):
         self.snapshot: dict = {"rows": [], "loot": {}, "total": 0, "duration": 0,
                                "metric": cfg.get("metric", "damage"), "stats": {}}
         self.selected = ""
+        #: Прокрутка таблицы в пикселях и размеры для её ограничения.
+        self._scroll = 0
+        self._content_h = 0
+        self._view_h = 1
+        #: Кадры оставшейся засветки после снимка окна. Гасит
+        #: таймер анимации, отдельный таймер заводить незачем.
+        self._flash = 0
         self._drag: QPoint | None = None
         self._resizing = False
         self._hot = ""
@@ -274,8 +300,16 @@ class Overlay(QWidget):
         self.TAB_ICON = max(16, min(26, self.H + 3))
         # Строка добычи вчетверо выше строки разбора по скиллам. Иконки в
         # паке лежат 64x64 — выше этого масштабировать нечего, будет мыло.
-        self.LOOT_ICON = max(24, min(64, int(self.cfg.get("loot_icon", 52))))
+        # Один размер и на добычу, и на разбор по скиллам: строки должны
+        # выглядеть одинаково, на какой бы вкладке ни находились.
+        self.LOOT_ICON = max(20, min(64, int(self.cfg.get("loot_icon", 44))))
         self.LOOT_H = self.LOOT_ICON + 8
+        self.SKILL_H = self.LOOT_H
+        self.LOOT_MAX = LOOT_MAX_ITEMS
+        # Полоска опыта и кинаха: две строки с иконкой из клиента.
+        self.STATS_ICON = max(14, min(24, self.H))
+        self.STATS_H = ((self.STATS_ICON + 6) * 2
+                        if self.cfg.get("show_stats_strip", True) else 0)
         self.HEAD_H = self.H + 14           # вкладки стали кнопками, им нужен воздух
         # Панель действий: размер кнопки настраивается, потому что вкус на
         # «достаточно крупно» у всех разный, а места в оверлее мало.
@@ -342,7 +376,8 @@ class Overlay(QWidget):
 
     @property
     def chrome_h(self) -> int:
-        return self.HEAD_H + self.ACT_H + self.COL_H + 1 + 1 + self.foot_h
+        return (self.HEAD_H + self.ACT_H + self.STATS_H
+                + self.COL_H + 1 + 1 + self.foot_h)
 
     @property
     def foot_h(self) -> int:
@@ -451,6 +486,7 @@ class Overlay(QWidget):
     def set_metric(self, metric: str) -> None:
         self.cfg["metric"] = metric
         self.selected = ""
+        self._scroll = 0          # у новой вкладки своя длина списка
         self._colcache.clear()
         self._measure_columns()
         self._refresh()
@@ -458,6 +494,24 @@ class Overlay(QWidget):
     #: Лимит строки игрового чата. Берём с запасом: часть символов уходит на
     #: служебные обёртки, а обрезанная строка теряет хвост молча.
     CHAT_LIMIT = 240
+
+    def action_screenshot(self) -> None:
+        """Снимок окна в буфер обмена, ровно по текущему размеру окна.
+
+        grab() снимает сам виджет, а не область экрана, поэтому размер
+        всегда совпадает с окном, что бы ни лежало поверх, и в кадр не
+        попадает ни игра, ни другие окна. Наведение и полосу прокрутки
+        на время снимка убираем: на картинке они выглядят случайным
+        артефактом.
+        """
+        hot, self._hot = self._hot, ""
+        self.repaint()
+        pixmap = self.grab()
+        self._hot = hot
+        self.update()
+        QApplication.clipboard().setPixmap(pixmap)
+        self._flash = 12          # короткая засветка кромки: снимок сделан
+        self.update()
 
     def action_copy(self) -> None:
         text = self.copy_text()
@@ -517,6 +571,9 @@ class Overlay(QWidget):
         Не QPropertyAnimation: цель меняется посреди анимации четыре раза в
         секунду, и перезапуск даёт рывок на каждом обновлении.
         """
+        if self._flash > 0:
+            self._flash -= 1
+            self.update()
         if not self.isVisible():
             return
         rows = self.snapshot.get("rows", ())
@@ -589,30 +646,47 @@ class Overlay(QWidget):
         self._paint_head(p, w, snap_)
         if self.ACT_H:
             self._paint_actions(p, w, snap_)
+        if self.STATS_H:
+            self._paint_stats(p, w, snap_, dpr)
         self._paint_colheads(p, w)
 
-        top = self.HEAD_H + self.ACT_H + self.COL_H + 1
+        top = self.HEAD_H + self.ACT_H + self.STATS_H + self.COL_H + 1
         bottom = h - self.foot_h - 1
         rows = [r for r in snap_.get("rows", ()) if r["name"] != UNATTRIBUTED]
         dot = next((r for r in snap_.get("rows", ()) if r["name"] == UNATTRIBUTED), None)
 
         if not rows and dot is None:
             self._paint_empty(p, w, top, bottom, snap_)
+            self._content_h = 0
+            self._view_h = max(1, bottom - top)
         else:
-            y = top
+            # Список прокручивается: раскрытая добыча — это до 12 строк по
+            # 60 px, в окно они не влезают никогда, а раньше просто
+            # обрезались по нижней кромке без всякого признака, что дальше
+            # что-то есть. Рисуем со сдвигом и режем по области.
+            self._view_h = max(1, bottom - top)
+            self._clamp_scroll()
+            p.save()
+            p.setClipRect(QRect(0, top, w, self._view_h))
+            y = top - self._scroll
             for i, r in enumerate(rows):
-                if y + self.ROW_H > bottom:
+                if y > bottom:
                     break
-                self._paint_row(p, i + 1, r, y, w, dpr)
-                self._row_rects.append((QRect(0, y, w, self.ROW_H), r))
+                if y + self.ROW_H > top:
+                    self._paint_row(p, i + 1, r, y, w, dpr)
+                    self._row_rects.append((QRect(0, y, w, self.ROW_H), r))
                 y += self.ROW_H
                 if self.selected == r["name"]:
                     y = self._paint_skills(p, r, y, w, bottom, dpr)
-            # Периодический урон — не игрок: без номера, последней строкой
-            if dot is not None and y + self.ROW_H <= bottom:
-                p.fillRect(QRectF(0, snap(y, dpr), w, 1), HAIR)
-                self._paint_row(p, 0, dot, y + 1, w, dpr, muted=True)
-                self._row_rects.append((QRect(0, y + 1, w, self.ROW_H), dot))
+            if dot is not None:
+                if y + self.ROW_H > top and y <= bottom:
+                    p.fillRect(QRectF(0, snap(y, dpr), w, 1), HAIR)
+                    self._paint_row(p, 0, dot, y + 1, w, dpr, muted=True)
+                    self._row_rects.append((QRect(0, y + 1, w, self.ROW_H), dot))
+                y += self.ROW_H + 1
+            p.restore()
+            self._content_h = y + self._scroll - top
+            self._paint_scrollbar(p, w, top, dpr)
 
         if self.foot_h:
             self._paint_footer(p, w, h, snap_, dpr)
@@ -623,6 +697,13 @@ class Overlay(QWidget):
             p.setPen(QPen(EDGE_DARK, 1))
             p.drawLine(0, h - 1, w - 1, h - 1)
             p.drawLine(w - 1, 0, w - 1, h - 1)
+        if self._flash > 0:
+            glow = QColor(ACCENT)
+            glow.setAlpha(min(200, self._flash * 18))
+            p.setPen(QPen(glow, 2))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(QRectF(1, 1, w - 2, h - 2),
+                              R_WINDOW, R_WINDOW)
         self._paint_grip(p, w, h)
 
     # -- шапка --------------------------------------------------------------
@@ -670,6 +751,40 @@ class Overlay(QWidget):
             self._button(p, QRect(bx, top, size, size), name, snap_)
             bx -= size + 2
 
+    # -- прокрутка ----------------------------------------------------------
+
+    def _max_scroll(self) -> int:
+        return max(0, self._content_h - self._view_h)
+
+    def _clamp_scroll(self) -> None:
+        self._scroll = max(0, min(self._scroll, self._max_scroll()))
+
+    def wheelEvent(self, e) -> None:
+        if self._max_scroll() <= 0:
+            e.ignore()
+            return
+        # Шаг в строках, а не в пикселях: строка добычи втрое выше строки
+        # разбора, и одинаковый пиксельный шаг ощущается по-разному.
+        step = self.LOOT_H if self.cfg.get("metric") == "loot" else self.ROW_H
+        delta = e.angleDelta().y()
+        self._scroll -= (delta / 120.0) * step
+        self._scroll = int(self._scroll)
+        self._clamp_scroll()
+        self.update()
+        e.accept()
+
+    def _paint_scrollbar(self, p: QPainter, w: int, top: int, dpr: float) -> None:
+        """Тонкая полоса справа. Без неё не видно, что список длиннее окна."""
+        span = self._max_scroll()
+        if span <= 0:
+            return
+        track_h = self._view_h
+        thumb_h = max(24, int(track_h * self._view_h / max(1, self._content_h)))
+        pos = int((track_h - thumb_h) * self._scroll / span)
+        x = w - 4
+        p.fillRect(QRectF(x, top, 2, track_h), TRACK)
+        p.fillRect(QRectF(x, top + pos, 2, thumb_h), INK_MUTE)
+
     def _plate(self, p: QPainter, rect: QRect, active: bool, hot: bool) -> None:
         """Подложка вкладки: прямоугольник со скруглением.
 
@@ -707,8 +822,8 @@ class Overlay(QWidget):
             if name == "play" and paused:
                 colour = ACCENT
             glyph = QRect(rect.x(), rect.y(), rect.width(), rect.height())
-            if name == "settings":
-                self._glyph(p, "settings", glyph, colour, size / 26)
+            if name in ("settings", "shot"):
+                self._glyph(p, name, glyph, colour, size / 26)
             else:
                 self._big_action(p, name, glyph, colour, paused, size / 26)
             x += size + gap
@@ -858,6 +973,18 @@ class Overlay(QWidget):
             p.drawLine(pt(2.4, -8.8), pt(1.4, -6.6))
             p.setBrush(self._bg(L2, chrome=True))
             p.drawEllipse(QRect(pt(-1.9, 2.2), pt(1.9, 6)).normalized())
+        elif name == "shot":
+            # Фотоаппарат: корпус, видоискатель, объектив
+            p.setBrush(colour)
+            p.setPen(Qt.NoPen)
+            p.drawRoundedRect(QRect(pt(-4.4, -8), pt(1.6, -5.6)).normalized(),
+                              0.8 * k, 0.8 * k)
+            p.drawRoundedRect(QRect(pt(-9, -5.6), pt(9, 8)).normalized(),
+                              1.8 * k, 1.8 * k)
+            p.setBrush(self._bg(L2, chrome=True))
+            p.drawEllipse(QRect(pt(-4.2, -2.8), pt(4.2, 5.4)).normalized())
+            p.setBrush(colour)
+            p.drawEllipse(QRect(pt(-1.8, -0.4), pt(1.8, 3)).normalized())
         elif name == "settings":
             # шестерня: залитый венец с зубцами-трапециями и отверстие
             import math
@@ -877,7 +1004,7 @@ class Overlay(QWidget):
     def _icon(self, p: QPainter, name: str, rect: QRect, colour: QColor,
               paused: bool = False) -> None:
         """Значки — примитивами: символы вроде ⚙ есть не во всех шрифтах."""
-        if name in ("sword", "flask", "shield", "pouch", "settings"):
+        if name in ("sword", "flask", "shield", "pouch", "settings", "shot"):
             self._glyph(p, name, rect, colour)
             return
         cx, cy = rect.center().x() + 1, rect.center().y() + 1
@@ -906,8 +1033,47 @@ class Overlay(QWidget):
             p.drawLine(cx - 5, cy - 5, cx + 5, cy + 5)
             p.drawLine(cx + 5, cy - 5, cx - 5, cy + 5)
 
-    def _paint_colheads(self, p: QPainter, w: int) -> None:
+    def _paint_stats(self, p: QPainter, w: int, snap_: dict, dpr: float) -> None:
+        """Опыт и кинах двумя полосками под кнопками.
+
+        Раньше они делили подвал с таймером и итогом и вытеснялись оттуда
+        при узком окне: в футере стоит `slots[:2]`, и третья величина просто
+        не помещалась. Здесь у них фиксированное место, которое ничем не
+        занимают.
+        """
         top = self.HEAD_H + self.ACT_H
+        p.fillRect(QRect(0, top, w, self.STATS_H), self._bg(L2, chrome=True))
+        loot = snap_.get("loot", {})
+        rows = (("exp", "опыт", loot.get("exp", 0)),
+                ("kinah", "кинах", loot.get("kinah_in", 0)))
+        fm = QFontMetrics(self.f_small)
+        icon = self.STATS_ICON
+        row_h = self.STATS_H // 2
+        for i, (key, label, value) in enumerate(rows):
+            y = top + i * row_h
+            base = y + (row_h + fm.ascent() - fm.descent()) // 2
+            pm = ui_icon(key, icon, dpr)
+            x = PAD
+            if pm is not None:
+                p.drawPixmap(x, y + (row_h - icon) // 2, pm)
+            else:
+                # Пака нет — рисуем кружок, чтобы полоска не разъезжалась.
+                p.setPen(QPen(INK_MUTE, 1))
+                p.setBrush(Qt.NoBrush)
+                p.drawEllipse(QRect(x + 2, y + (row_h - icon) // 2 + 2,
+                                    icon - 4, icon - 4))
+            x += icon + GAP
+            self._txt(p, x, base, label, INK3, self.f_small)
+            mant, suf = fmt_ui(value)
+            right = w - PAD
+            if suf:
+                right = self._txt_right(p, right, base, suf, INK3, self.f_small)
+            self._txt_right(p, right, base, mant, INK2 if value else INK_MUTE,
+                            self.f_num)
+        p.fillRect(QRectF(0, top + self.STATS_H - 1, w, 1), RULE)
+
+    def _paint_colheads(self, p: QPainter, w: int) -> None:
+        top = self.HEAD_H + self.ACT_H + self.STATS_H
         p.fillRect(QRect(0, top, w, self.COL_H), self._bg(L2, chrome=True))
         fm = QFontMetrics(self.f_caps)
         base = top + fm.ascent() + 3
@@ -1026,12 +1192,15 @@ class Overlay(QWidget):
         loot_mode = self.cfg.get("metric") == "loot"
         skills = r.get("skills") or []
         if loot_mode:
-            items = list(skills[:12])
+            # Раньше стояло 12, и при 19 видах добычи семь просто пропадали.
+            # Теперь список прокручивается, поэтому потолок нужен только
+            # чтобы не рисовать сотни строк на редком складском логе.
+            items = list(skills[:self.LOOT_MAX])
         else:
             auto = max(0, r["total"] - sum(v for _k, v in skills))
             items = list(skills[:6])
             if auto > 0:
-                items.append(("автоатака", auto))
+                items.append((AUTOATTACK, auto))
         if not items:
             return y
         top_v = max((v for _k, v in items), default=1) or 1
@@ -1043,26 +1212,35 @@ class Overlay(QWidget):
         icons_dir = cfgmod.skill_icons_dir(self.cfg)
         # Добыча — витрина: там смотрят, ЧТО выпало, и иконка важнее плотности.
         # Разбор по скиллам, наоборот, читают списком, и ему нужна компактность.
-        step = self.LOOT_H if loot_mode else self.SKILL_H
-        size = (self.LOOT_ICON if loot_mode else self.SKILL_H - 4)
-        f_name = self.f_body if loot_mode else self.f_small
+        step = self.LOOT_H
+        size = self.LOOT_ICON
+        f_name = self.f_body
         fm = QFontMetrics(f_name)
         fq = QFontMetrics(self.f_small)
         start = y
+        top_edge = self.HEAD_H + self.ACT_H + self.STATS_H + self.COL_H + 1
         for label, value in items:
-            if y + step > bottom:
-                break
+            # Считаем высоту всегда, рисуем только видимое: прокрутке нужна
+            # полная высота содержимого, а тратить кадр на строки за краем
+            # окна незачем.
+            if y + step < top_edge or y > bottom:
+                y += step
+                continue
             p.fillRect(QRect(x0, y, int((w - x0 - PAD) * value / top_v),
                              step - 1), wash)
             xi = x0 + 4
             if loot_mode:
                 icon = item_icon((r.get("ids") or {}).get(label, ""), size, dpr)
+            elif label == AUTOATTACK:
+                # У автоатаки имени скилла в логе нет вовсе, поэтому искать
+                # её среди иконок скиллов бессмысленно — берём отдельную.
+                icon = ui_icon("autoattack", size, dpr)
             else:
                 icon = skill_icon(icons_dir, label, size, dpr)
             if icon is not None:
                 p.drawPixmap(xi, y + (step - size) // 2, icon)
                 xi += size + GAP
-            elif loot_mode:
+            else:
                 # Пустая рамка вместо картинки: без неё строки без иконки
                 # съезжают влево и список выглядит рваным.
                 p.setPen(QPen(HAIR, 1))
@@ -1155,7 +1333,12 @@ class Overlay(QWidget):
 
         loot = snap_.get("loot", {})
         slots = []
-        for key, label in (("exp", "опыт"), ("ap", "AP"), ("kinah", "кинах")):
+        # Опыт и кинах уехали в полоску под кнопками — в подвале они бы
+        # просто дублировались. Здесь остаётся то, чему наверху места нет.
+        pairs = (("exp", "опыт"), ("ap", "AP"), ("kinah", "кинах"))
+        if self.STATS_H:
+            pairs = (("ap", "AP"), ("kills", "убито"), ("deaths", "смертей"))
+        for key, label in pairs:
             value = loot.get("kinah_in" if key == "kinah" else key)
             if value:
                 mant, suf = fmt_ui(value)
@@ -1239,6 +1422,7 @@ class Overlay(QWidget):
             "play": self.action_toggle_pause,
             "clear": self.action_clear,
             "copy": self.action_copy,
+            "shot": self.action_screenshot,
             "settings": lambda: self.on_settings and self.on_settings(),
             "menu": lambda: self._show_menu(global_pos),
             "close": lambda: self.on_quit and self.on_quit(),

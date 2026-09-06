@@ -417,7 +417,11 @@ class Meter:
         if kind == "loot_item":
             if self._loot_out_of_combat(ev.ts):
                 return
-            self.items.setdefault(ev.actor, Counter())[ev.target] += ev.amount
+            # Через _owner: свой ник должен схлопываться в «You», как в
+            # уроне. Без этого игрок видел в добыче ДВЕ свои строки —
+            # «You have acquired» и «<ник> has acquired» идут разными
+            # шаблонами клиента, ровно как в боевых сообщениях.
+            self.items.setdefault(self._owner(ev.actor), Counter())[ev.target] += ev.amount
             return
 
         if kind == "roll":

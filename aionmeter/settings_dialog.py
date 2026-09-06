@@ -274,15 +274,19 @@ class SettingsDialog(QDialog):
             "Сторона квадратной кнопки. Полоса занимает столько же по высоте, "
             "поэтому крупные кнопки съедают место у таблицы."))
 
+        self.ch_strip = QCheckBox("Полоска опыта и кинаха под кнопками")
+        self.ch_strip.setChecked(self.cfg.get("show_stats_strip", True))
+        form.addRow("", self.ch_strip)
+
         self.sp_loot = QSpinBox()
-        self.sp_loot.setRange(24, 64)
+        self.sp_loot.setRange(20, 64)
         self.sp_loot.setSingleStep(4)
         self.sp_loot.setSuffix(" px")
         self.sp_loot.setValue(int(self.cfg.get("loot_icon", 52)))
-        form.addRow("Иконка предмета", self.sp_loot)
+        form.addRow("Иконки в разборе", self.sp_loot)
         form.addRow("", self._hint(
-            "Размер иконки в списке добычи; высота строки подстраивается. "
-            "Выше 64 не имеет смысла — столько в самом клиенте, дальше мыло."))
+            "Один размер и на добычу, и на разбор по скиллам; высота строки "
+            "подстраивается. Выше 64 смысла нет — столько в самом клиенте."))
 
         self.sl_opacity = QSlider(Qt.Horizontal)
         self.sl_opacity.setRange(30, 100)
@@ -445,6 +449,7 @@ class SettingsDialog(QDialog):
         cfg["show_actions"] = self.ch_actions.isChecked()
         cfg["action_size"] = self.sp_action.value()
         cfg["loot_icon"] = self.sp_loot.value()
+        cfg["show_stats_strip"] = self.ch_strip.isChecked()
         cfg["backfill_kb"] = self.sp_backfill.value()
         cfg["show_loot"] = self.ch_loot.isChecked()
         cfg["icons_dir"] = self.ed_icons.text().strip()

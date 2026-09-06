@@ -132,6 +132,15 @@ def skill_icon_path(display: str) -> Path | None:
     return path if path.is_file() else None
 
 
+def ui_icon_path(name: str) -> Path | None:
+    """Иконка для самого интерфейса: kinah, exp, autoattack."""
+    base = root()
+    if base is None or not name:
+        return None
+    path = base / "ui" / (name + ".png")
+    return path if path.is_file() else None
+
+
 def class_icon_path(code: str) -> Path | None:
     """Путь к эмблеме класса по коду вроде «RA»."""
     base = root()
