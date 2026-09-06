@@ -161,10 +161,17 @@ class SettingsDialog(QDialog):
             "Ноль — метр открывается пустым и считает только то, что было "
             "после запуска. Больше нуля — подхватит и события до него."))
 
+        self.ch_loot_combat = QCheckBox("В добычу только то, что выпало в бою")
+        self.ch_loot_combat.setChecked(self.cfg.get("loot_in_combat", True))
         self.ch_reflect = QCheckBox("Считать урон щита-отражателя")
         self.ch_reflect.setChecked(self.cfg.get("count_reflect", False))
         form.addRow("", self.ch_mobs)
         form.addRow("", self.ch_pets)
+        form.addRow("", self.ch_loot_combat)
+        form.addRow("", self._hint(
+            "Клиент пишет одну и ту же строку и на дроп с моба, и на взятое "
+            "со склада или из почты — источник в логе не указан. Отличаем по "
+            "обстановке: дроп падает в бою, склад и почта — в городе. Покупки различать не нужно, у них своя строка."))
         form.addRow("", self.ch_reflect)
         form.addRow("", self._hint(
             "В строках отражения клиент печатает фиктивные числа: на аое Модор "
@@ -431,6 +438,7 @@ class SettingsDialog(QDialog):
         cfg["hide_mobs"] = self.ch_mobs.isChecked()
         cfg["merge_pets"] = self.ch_pets.isChecked()
         cfg["count_reflect"] = self.ch_reflect.isChecked()
+        cfg["loot_in_combat"] = self.ch_loot_combat.isChecked()
         cfg["metric"] = self.cb_metric.currentData()
         cfg["transparent"] = self.ch_transparent.isChecked()
         cfg["always_on_top"] = self.ch_ontop.isChecked()

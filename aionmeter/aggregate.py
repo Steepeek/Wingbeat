@@ -145,6 +145,9 @@ class Meter:
         self.history: list[Encounter] = []
         self.pending_close = 0
         self.last_ts = 0
+        #: Когда в последний раз кто-то кого-то бил или лечил.
+        #: По нему отличаем настоящий дроп от взятого со склада.
+        self.last_combat_ts = 0
         self.stats = Counter()
         #: Добыча за сессию: опыт, AP, кинах, убийства, смерти.
         self.loot: Counter = Counter()
@@ -271,6 +274,32 @@ class Meter:
             return False
         return seen != ev.actor
 
+    def _loot_out_of_combat(self, ts: int) -> bool:
+        """Предмет взят вне боя — со склада, из почты, из ремесла?
+
+        Клиент этого НЕ различает: и лут с моба, и взятое со склада, и
+        вложение из письма приходят одной и той же строкой
+        «You have acquired ...» (STR_MSG_GET_ITEM). Проверено по таблице
+        шаблонов клиента и по живому логу: слова «warehouse» в нём нет
+        вовсе, а «Mail has arrived» — только уведомление о письме, никак
+        не связанное с моментом, когда вложение забирают.
+
+        Покупки различать не нужно: у них своя строка «You have purchased»,
+        и в добычу они не попадали никогда.
+
+        Раз источник не написан, судим по обстановке: настоящий дроп падает
+        во время боя или сразу после него, а склад и почта — в городе, где
+        никто никого не бьёт. Окно намеренно щедрое: труп обыскивают не
+        мгновенно.
+        """
+        if not self.cfg.get("loot_in_combat", True):
+            return False
+        # Проверять self.encounter нельзя: объект боя живёт до следующего
+        # события и после получаса тишины всё ещё не None. Судим по времени
+        # последнего удара — оно не врёт.
+        window = max(0, int(self.cfg.get("loot_window", 25)))
+        return ts - self.last_combat_ts > window
+
     def _close(self) -> None:
         if self.encounter is not None:
             self.history.append(self.encounter)
@@ -295,10 +324,16 @@ class Meter:
 
     # -- приём событий --
 
+    #: События, по которым видно, что бой идёт. Хил сюда входит: у клирика
+    #: в бою может не быть ни одного удара, а добыча ему падает так же.
+    COMBAT_KINDS = frozenset(("damage", "dot", "heal", "xp", "death", "pvp"))
+
     def feed(self, ev) -> None:
         self.stats["events"] += 1
         self.last_ts = max(self.last_ts, ev.ts)
         kind = ev.kind
+        if kind in self.COMBAT_KINDS:
+            self.last_combat_ts = max(self.last_combat_ts, ev.ts)
 
         if kind == "party":
             if ev.extra in ("join", "invite"):
@@ -380,6 +415,8 @@ class Meter:
             return
 
         if kind == "loot_item":
+            if self._loot_out_of_combat(ev.ts):
+                return
             self.items.setdefault(ev.actor, Counter())[ev.target] += ev.amount
             return
 

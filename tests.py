@@ -401,10 +401,46 @@ check("одиночная запись по нику склеена со сво�
       [(r["name"], r["total"]) for r in m21.snapshot(DAMAGE)["rows"]], [("You", 300)])
 
 
+print("добыча: только выпавшее в бою")
+
+# Клиент пишет одну строку и на дроп, и на взятое со склада: STR_MSG_GET_ITEM.
+# Отличаем по обстановке — был ли рядом бой.
+m30 = Meter(dict(DEFAULTS))
+m30.cfg["scope"] = "all"
+m30.feed(parse("2026.09.05 12:00:00", "You inflicted 500 damage on Mob."))
+m30.feed(parse("2026.09.05 12:00:05", "You have acquired [item:111;ver6;;;;]."))
+rows23 = m30.snapshot("loot")["rows"]
+check("дроп во время боя засчитан", [r["total"] for r in rows23], [1])
+
+# Спустя долгую тишину — это склад или почта.
+m31 = Meter(dict(DEFAULTS))
+m31.cfg["scope"] = "all"
+m31.feed(parse("2026.09.05 12:00:00", "You inflicted 500 damage on Mob."))
+m31.feed(parse("2026.09.05 12:30:00", "You have acquired [item:222;ver6;;;;]."))
+check("взятое вне боя не засчитано", m31.snapshot("loot")["rows"], [])
+
+# Галочка возвращает прежнее поведение целиком.
+m32 = Meter(dict(DEFAULTS))
+m32.cfg["scope"] = "all"
+m32.cfg["loot_in_combat"] = False
+m32.feed(parse("2026.09.05 12:30:00", "You have acquired [item:222;ver6;;;;]."))
+check("настройкой считается всё подряд",
+      [r["total"] for r in m32.snapshot("loot")["rows"]], [1])
+
+# Труп обыскивают не мгновенно — окно после боя должно быть щедрым.
+m33 = Meter(dict(DEFAULTS))
+m33.cfg["scope"] = "all"
+m33.feed(parse("2026.09.05 12:00:00", "You inflicted 500 damage on Mob."))
+m33.feed(parse("2026.09.05 12:00:20", "You have acquired [item:333;ver6;;;;]."))
+check("подбор через 20 с после боя ещё считается дропом",
+      [r["total"] for r in m33.snapshot("loot")["rows"]], [1])
+
+
 print("добыча: номера предметов")
 
 m22 = Meter(dict(DEFAULTS))
 m22.cfg["scope"] = "all"
+m22.feed(parse("2026.09.05 11:59:58", "You inflicted 100 damage on Mob."))
 m22.feed(parse("2026.09.05 12:00:00",
                "You have acquired [item:167000522;ver6;;;;]."))
 # Короткая форма без точек с запятой: раньше номер уезжал со скобкой,
@@ -609,6 +645,8 @@ check("безымянный прок остаётся отдельной стр�
 
 # Лут
 m27 = Meter(dict(DEFAULTS)); m27.cfg["scope"] = "all"
+# Бой нужен: добыча вне боя теперь не засчитывается — см. блок выше.
+m27.feed(parse("2026.08.31 18:59:58", "You inflicted 100 damage on Mob."))
 m27.feed(parse("2026.08.31 19:00:00", "You have acquired [item:167000522;ver6;;;;]."))
 m27.feed(parse("2026.08.31 19:00:01", "You have acquired 5 [item:186000010;ver6;;;;]s."))
 m27.feed(parse("2026.08.31 19:00:02", "Weisti has acquired [item:188052667;ver6;;;;]."))
