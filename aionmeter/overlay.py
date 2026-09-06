@@ -40,7 +40,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication,
-                           QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygon)
+                           QIcon, QLinearGradient, QPainter, QPainterPath, QPen,
+                           QPixmap, QPolygon)
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
 from . import assets
@@ -66,6 +67,15 @@ SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
 
 METRIC_TABS = (("damage", "Урон"), ("heal", "Хил"), ("taken", "Получено"),
                ("loot", "Добыча"))
+
+#: Значок для каждой вкладки. Рисуются примитивами: подходящих символов нет
+#: ни в одном системном шрифте, а тащить ради четырёх картинок шрифт иконок
+#: в сборку дороже, чем два десятка строк QPainter.
+TAB_GLYPH = {"damage": "sword", "heal": "flask", "taken": "shield", "loot": "pouch"}
+
+#: Крупные кнопки действий. Порядок слева направо — по частоте нажатий.
+ACTIONS = (("play", "Старт / пауза"), ("clear", "Сбросить"),
+           ("copy", "В игровой чат"), ("settings", "Настройки"))
 METRIC_TITLE = {"damage": "Урон", "heal": "Хил", "taken": "Полученный урон",
                 "loot": "Добыча"}
 
@@ -75,7 +85,7 @@ CAPTIONS = {
     "damage": {"dmg": "УРОН", "dps": "DPS", "pct": "%", "hits": "УД.", "crit": "КР."},
     "heal": {"dmg": "ХИЛ", "dps": "HPS", "pct": "%", "hits": "КАСТ", "crit": "КР."},
     "taken": {"dmg": "УРОН", "dps": "DPS", "pct": "%", "hits": "УД.", "crit": "КР."},
-    "loot": {"dmg": "ШТ.", "dps": "", "pct": "%", "hits": "ВИДОВ", "crit": ""},
+    "loot": {"dmg": "ШТ.", "dps": "", "pct": "%", "hits": "ВИДЫ", "crit": ""},
 }
 #: На вкладке добычи нет ни DPS, ни критов — там считают предметы.
 LOOT_COLUMNS = ("dmg", "pct", "hits")
@@ -87,7 +97,6 @@ COL_ORDER = ("dmg", "dps", "pct", "hits", "crit")
 COL_REF = {"dmg": ("888,88", "M"), "dps": ("888,8", "k"), "pct": ("100%", ""),
            "hits": ("8888", ""), "crit": ("100%", "")}
 
-TOOLBAR = (("play", "Старт / стоп"), ("clear", "Очистить"), ("copy", "Скопировать в чат"))
 TOOLBAR_RIGHT = (("menu", "Меню"), ("close", "Выход"))
 
 _ICON_CACHE: dict[tuple, object] = {}
@@ -161,6 +170,18 @@ def skill_icon(icons_dir: str, name: str, size: int, dpr: float = 1.0):
                 break
     if pm is None:
         pm = _from_pack(assets.skill_icon_path(name), size, dpr)
+    _ICON_CACHE[key] = pm
+    return pm
+
+
+def item_icon(item_id: str, size: int, dpr: float = 1.0):
+    """Иконка предмета из ассет-пака по номеру."""
+    if not item_id:
+        return None
+    key = ("item", item_id, size, round(dpr, 2))
+    if key in _ICON_CACHE:
+        return _ICON_CACHE[key]
+    pm = _from_pack(assets.item_icon_path(item_id), size, dpr)
     _ICON_CACHE[key] = pm
     return pm
 
@@ -250,6 +271,12 @@ class Overlay(QWidget):
         self.RAIL = max(2, round(self.H / 8))
         self.ICON = max(12, min(20, self.H - 5))
         self.BTN = self.H + 4
+        self.TAB_ICON = max(16, min(26, self.H + 3))
+        self.HEAD_H = self.H + 14           # вкладки стали кнопками, им нужен воздух
+        # Панель действий: размер кнопки настраивается, потому что вкус на
+        # «достаточно крупно» у всех разный, а места в оверлее мало.
+        self.ACT = max(28, min(96, int(self.cfg.get("action_size", 48))))
+        self.ACT_H = self.ACT + 10 if self.cfg.get("show_actions", True) else 0
         # Одна базовая линия на все три кегля в строке
         self.BASE = (self.ROW_H - self.RAIL - 2 + fm.ascent() - fm.descent()) // 2
         self._measure_columns()
@@ -289,7 +316,11 @@ class Overlay(QWidget):
         active = [c for c in COL_ORDER if c in wanted and c in self._colw]
         if w is None:
             return [(c, self._colw[c]) for c in active]
-        cached = self._colcache.get(w)
+        # Ключ включает вкладку: на добыче набор колонок другой (LOOT_COLUMNS),
+        # и кэш только по ширине оставлял на ней колонку DPS от предыдущей
+        # вкладки — с нулями во всех строках.
+        ckey = (w, self.cfg.get("metric", "damage"))
+        cached = self._colcache.get(ckey)
         if cached is not None:
             return cached
         left = PAD + self.ICON + GAP + 20          # иконка + ранг
@@ -302,12 +333,12 @@ class Overlay(QWidget):
             if w - PAD - left - used >= self.NAME_MIN:
                 break
         result = [(c, self._colw[c]) for c in active]
-        self._colcache[w] = result
+        self._colcache[ckey] = result
         return result
 
     @property
     def chrome_h(self) -> int:
-        return self.HEAD_H + self.COL_H + 1 + 1 + self.foot_h
+        return self.HEAD_H + self.ACT_H + self.COL_H + 1 + 1 + self.foot_h
 
     @property
     def foot_h(self) -> int:
@@ -552,9 +583,11 @@ class Overlay(QWidget):
         snap_ = self.snapshot
 
         self._paint_head(p, w, snap_)
+        if self.ACT_H:
+            self._paint_actions(p, w, snap_)
         self._paint_colheads(p, w)
 
-        top = self.HEAD_H + self.COL_H + 1
+        top = self.HEAD_H + self.ACT_H + self.COL_H + 1
         bottom = h - self.foot_h - 1
         rows = [r for r in snap_.get("rows", ()) if r["name"] != UNATTRIBUTED]
         dot = next((r for r in snap_.get("rows", ()) if r["name"] == UNATTRIBUTED), None)
@@ -591,34 +624,40 @@ class Overlay(QWidget):
     # -- шапка --------------------------------------------------------------
 
     def _paint_head(self, p: QPainter, w: int, snap_: dict) -> None:
-        p.fillRect(QRect(0, 0, w, self.HEAD_H), self._bg(L2, chrome=True))
+        p.fillRect(QRect(0, 0, w, self.HEAD_H + self.ACT_H), self._bg(L2, chrome=True))
         fm = QFontMetrics(self.f_tab)
         base = (self.HEAD_H + fm.ascent() - fm.descent()) // 2
         cur = self.cfg.get("metric", "damage")
 
-        # Блок кнопок: 3 слева + 2 справа + зазор между группами
-        buttons_w = PAD + self.BTN * 5 + 2 * 4 + GROUP
-        full = sum(fm.horizontalAdvance(l) + GROUP for _k, l in METRIC_TABS)
-        labels = dict(METRIC_TABS)
-        if PAD + full > w - buttons_w:
-            labels = {"damage": "Урон", "heal": "Хил", "taken": "Получ."}
-            short = sum(fm.horizontalAdvance(l) + GROUP for l in labels.values())
-            if PAD + short > w - buttons_w:
-                labels = {"damage": "Урон", "heal": "Хил", "taken": "Пол."}
+        # Справа только окно: меню и закрытие. Всё остальное уехало на
+        # крупную панель действий ниже — там его видно.
+        chrome_w = PAD + self.BTN * 2 + 2
+        avail = w - chrome_w - PAD
+
+        # Вкладка = значок + подпись. Если подписи не влезают, остаются одни
+        # значки: четыре разные фигуры различимы и без слов, а обрезанный
+        # текст хуже отсутствующего.
+        icon_w = self.TAB_ICON
+        gaps = 6
+        full = sum(fm.horizontalAdvance(l) + icon_w + gaps + 14
+                   for _k, l in METRIC_TABS)
+        show_text = full <= avail
 
         x = PAD
-        for key, _full_label in METRIC_TABS:
-            label = labels[key]
-            tw = fm.horizontalAdvance(label)
-            rect = QRect(x - 4, 0, tw + 8, self.HEAD_H)
+        for key, label in METRIC_TABS:
+            tw = fm.horizontalAdvance(label) if show_text else 0
+            bw = icon_w + (gaps + tw if show_text else 0) + 14
+            rect = QRect(x, 3, bw, self.HEAD_H - 6)
             self._hit.append((f"metric:{key}", rect))
-            if key == cur:
-                self._txt(p, x, base, label, INK, self.f_tab)
-                p.fillRect(QRectF(x, self.HEAD_H - 3, tw, 2), INK)
-            else:
-                hot = self._hot == f"metric:{key}"
-                self._txt(p, x, base, label, INK2 if hot else INK3, self.f_tab)
-            x += tw + GROUP
+            active = key == cur
+            hot = self._hot == f"metric:{key}"
+            self._plate(p, rect, active=active, hot=hot)
+            ink = INK if active else (INK2 if hot else INK3)
+            gi = QRect(rect.x() + 7, rect.y(), icon_w, rect.height())
+            self._glyph(p, TAB_GLYPH[key], gi, ink, self.TAB_ICON / 17)
+            if show_text:
+                self._txt(p, gi.right() + gaps, base, label, ink, self.f_tab)
+            x += bw + 4
 
         size = self.BTN
         top = (self.HEAD_H - size) // 2
@@ -626,10 +665,111 @@ class Overlay(QWidget):
         for name, _tip in reversed(TOOLBAR_RIGHT):
             self._button(p, QRect(bx, top, size, size), name, snap_)
             bx -= size + 2
-        bx -= GROUP - 2
-        for name, _tip in reversed(TOOLBAR):
-            self._button(p, QRect(bx, top, size, size), name, snap_)
-            bx -= size + 2
+
+    def _plate(self, p: QPainter, rect: QRect, active: bool, hot: bool) -> None:
+        """Подложка вкладки: прямоугольник со скруглением.
+
+        Активная — светлее фона и с полоской снизу; наведённая — чуть
+        подсвечена; остальные без подложки вовсе, иначе четыре плашки в ряд
+        превращают шапку в кашу.
+        """
+        if active:
+            p.setPen(Qt.NoPen)
+            p.setBrush(SORTBG)
+            p.drawRoundedRect(rect, R_CHIP, R_CHIP)
+            p.fillRect(QRectF(rect.x() + 6, rect.bottom() - 1,
+                              rect.width() - 12, 2), ACCENT)
+        elif hot:
+            p.setPen(Qt.NoPen)
+            p.setBrush(HOVER)
+            p.drawRoundedRect(rect, R_CHIP, R_CHIP)
+        p.setBrush(Qt.NoBrush)
+
+    def _paint_actions(self, p: QPainter, w: int, snap_: dict) -> None:
+        """Крупные квадратные кнопки по центру своей полосы."""
+        size = self.ACT
+        gap = max(6, size // 6)
+        total = len(ACTIONS) * size + (len(ACTIONS) - 1) * gap
+        x = max(PAD, (w - total) // 2)
+        y = self.HEAD_H + (self.ACT_H - size) // 2
+        for name, tip in ACTIONS:
+            rect = QRect(x, y, size, size)
+            self._hit.append((f"btn:{name}", rect))
+            hot = self._hot == f"btn:{name}"
+            paused = bool(snap_.get("paused"))
+            self._texture(p, rect, hot=hot,
+                          lit=(name == "play" and paused))
+            colour = INK if hot else INK2
+            if name == "play" and paused:
+                colour = ACCENT
+            glyph = QRect(rect.x(), rect.y(), rect.width(), rect.height())
+            if name == "settings":
+                self._glyph(p, "settings", glyph, colour, size / 26)
+            else:
+                self._big_action(p, name, glyph, colour, paused, size / 26)
+            x += size + gap
+        p.fillRect(QRectF(0, self.HEAD_H + self.ACT_H - 1, w, 1), RULE)
+
+    def _texture(self, p: QPainter, rect: QRect, hot: bool, lit: bool) -> None:
+        """Фактура кнопки: вертикальный градиент, кант и блик сверху.
+
+        Плоский прямоугольник на стеклянном фоне не читается как кнопка —
+        не видно, что по нему можно щёлкнуть. Градиент с кантом даёт объём,
+        оставаясь спокойным: это не игровая кнопка с камнями, а панель
+        инструмента, которая висит поверх боя.
+        """
+        grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        top = QColor(255, 255, 255, 30 if hot else 18)
+        bottom = QColor(0, 0, 0, 46 if hot else 60)
+        grad.setColorAt(0.0, top)
+        grad.setColorAt(0.45, QColor(255, 255, 255, 6 if hot else 3))
+        grad.setColorAt(1.0, bottom)
+        p.setPen(Qt.NoPen)
+        p.setBrush(SORTBG if hot else TRACK)
+        p.drawRoundedRect(rect, R_BUTTON + 2, R_BUTTON + 2)
+        p.setBrush(grad)
+        p.drawRoundedRect(rect, R_BUTTON + 2, R_BUTTON + 2)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(ACCENT if lit else (EDGE_LIT if hot else EDGE_DARK), 1))
+        p.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5),
+                          R_BUTTON + 2, R_BUTTON + 2)
+        # Блик по верхней кромке — то, что делает поверхность выпуклой.
+        p.setPen(QPen(QColor(255, 255, 255, 34 if hot else 20), 1))
+        p.drawLine(rect.x() + 5, rect.y() + 1, rect.right() - 5, rect.y() + 1)
+
+    def _big_action(self, p: QPainter, name: str, rect: QRect, colour: QColor,
+                    paused: bool, k: float) -> None:
+        """Пауза, сброс и копирование — крупным вектором."""
+        cx, cy = rect.center().x(), rect.center().y()
+        pen = QPen(colour, max(1.6, 2.0 * k))
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+
+        def pt(dx, dy):
+            return QPoint(int(round(cx + dx * k)), int(round(cy + dy * k)))
+
+        if name == "play":
+            p.setBrush(colour)
+            p.setPen(Qt.NoPen)
+            if paused:
+                p.drawPolygon(QPolygon([pt(-5, -9), pt(9, 0), pt(-5, 9)]))
+            else:
+                p.drawRoundedRect(QRect(pt(-7, -8), pt(-2, 8)).normalized(),
+                                  1.5 * k, 1.5 * k)
+                p.drawRoundedRect(QRect(pt(2, -8), pt(7, 8)).normalized(),
+                                  1.5 * k, 1.5 * k)
+        elif name == "clear":
+            # круговая стрелка: «начать заново»
+            p.drawArc(QRect(pt(-8, -8), pt(8, 8)).normalized(), 40 * 16, 280 * 16)
+            p.drawLine(pt(6.1, -9.4), pt(6.1, -3.6))
+            p.drawLine(pt(6.1, -9.4), pt(10.6, -7.6))
+        elif name == "copy":
+            p.drawRoundedRect(QRect(pt(-8, -8), pt(2, 3)).normalized(),
+                              1.6 * k, 1.6 * k)
+            p.drawRoundedRect(QRect(pt(-2, -3), pt(8, 8)).normalized(),
+                              1.6 * k, 1.6 * k)
 
     def _button(self, p: QPainter, rect: QRect, name: str, snap_: dict) -> None:
         self._hit.append((f"btn:{name}", rect))
@@ -646,9 +786,96 @@ class Overlay(QWidget):
             colour = INK if not snap_.get("paused") else ACCENT
         self._icon(p, name, rect, colour, bool(snap_.get("paused")))
 
+    def _glyph(self, p: QPainter, name: str, rect: QRect, colour: QColor,
+               scale: float = 1.0) -> None:
+        """Тематические значки жанра, рисуются вектором от центра rect.
+
+        Масштаб задаётся отдельно от размера кнопки, чтобы одна и та же
+        фигура читалась и в маленькой вкладке, и на крупной кнопке.
+        """
+        cx, cy = rect.center().x(), rect.center().y()
+        k = scale
+        pen = QPen(colour, max(1.2, 1.5 * k))
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+
+        def pt(dx, dy):
+            return QPoint(int(round(cx + dx * k)), int(round(cy + dy * k)))
+
+        # Фигуры намеренно СИЛУЭТНЫЕ и залитые: контурная графика на 17
+        # пикселях сливается в кашу, а сплошное пятно узнаётся с одного
+        # взгляда — а именно это и нужно от вкладки.
+        if name == "sword":
+            # Меч ДИАГОНАЛЬНЫЙ: вертикальный клинок с гардой на 19 пикселях
+            # читается как плюс или якорь, а наклонный силуэт узнаётся сразу.
+            p.save()
+            p.translate(cx, cy)
+            p.rotate(-45)
+            p.translate(-cx, -cy)
+            p.setBrush(colour)
+            p.setPen(Qt.NoPen)
+            p.drawPolygon(QPolygon([pt(0, -9), pt(2.1, -6), pt(2.1, 2.6),
+                                    pt(-2.1, 2.6), pt(-2.1, -6)]))
+            p.drawRoundedRect(QRect(pt(-6.2, 2.6), pt(6.2, 4.6)).normalized(),
+                              1 * k, 1 * k)
+            p.drawRect(QRect(pt(-1.2, 4.6), pt(1.2, 8)).normalized())
+            p.restore()
+        elif name == "flask":
+            # склянка зелья: пробка, коническая колба, светлый крест внутри
+            p.setBrush(colour)
+            p.setPen(Qt.NoPen)
+            p.drawRoundedRect(QRect(pt(-2.2, -9), pt(2.2, -6.4)).normalized(),
+                              0.8 * k, 0.8 * k)
+            p.drawPolygon(QPolygon([pt(-1.5, -6.4), pt(1.5, -6.4), pt(1.5, -3),
+                                    pt(5.6, 4.6), pt(4, 8.4), pt(-4, 8.4),
+                                    pt(-5.6, 4.6), pt(-1.5, -3)]))
+            p.setBrush(self._bg(L2, chrome=True))
+            p.drawRect(QRect(pt(-0.9, 2.4), pt(0.9, 6.6)).normalized())
+            p.drawRect(QRect(pt(-2.8, 4.1), pt(2.8, 4.9)).normalized())
+        elif name == "shield":
+            p.setBrush(colour)
+            p.setPen(Qt.NoPen)
+            p.drawPolygon(QPolygon([pt(0, -8.4), pt(6.6, -5.6), pt(6.6, 1),
+                                    pt(0, 8.6), pt(-6.6, 1), pt(-6.6, -5.6)]))
+            p.setBrush(self._bg(L2, chrome=True))
+            p.drawRect(QRect(pt(-0.9, -4.6), pt(0.9, 4.4)).normalized())
+        elif name == "pouch":
+            # мешок с завязкой: горловина уже тулова, снизу шире
+            p.setBrush(colour)
+            p.setPen(Qt.NoPen)
+            p.drawPolygon(QPolygon([pt(-3.2, -3.2), pt(3.2, -3.2), pt(8.2, 2.4),
+                                    pt(7.4, 6.4), pt(3.4, 8.8), pt(-3.4, 8.8),
+                                    pt(-7.4, 6.4), pt(-8.2, 2.4)]))
+            p.drawRoundedRect(QRect(pt(-3.6, -6.6), pt(3.6, -4.4)).normalized(),
+                              0.9 * k, 0.9 * k)
+            p.drawLine(pt(-2.4, -8.8), pt(-1.4, -6.6))
+            p.drawLine(pt(2.4, -8.8), pt(1.4, -6.6))
+            p.setBrush(self._bg(L2, chrome=True))
+            p.drawEllipse(QRect(pt(-1.9, 2.2), pt(1.9, 6)).normalized())
+        elif name == "settings":
+            # шестерня: залитый венец с зубцами-трапециями и отверстие
+            import math
+            p.setBrush(colour)
+            p.setPen(Qt.NoPen)
+            teeth = 8
+            poly = []
+            for i in range(teeth * 2):
+                a = math.pi * i / teeth - math.pi / 2
+                r = 8.6 if i % 2 == 0 else 6.2
+                # чуть сужаем вершины зубцов, иначе получается солнце
+                poly.append(pt(math.cos(a) * r, math.sin(a) * r))
+            p.drawPolygon(QPolygon(poly))
+            p.setBrush(self._bg(L2, chrome=True))
+            p.drawEllipse(QRect(pt(-3, -3), pt(3, 3)).normalized())
+
     def _icon(self, p: QPainter, name: str, rect: QRect, colour: QColor,
               paused: bool = False) -> None:
         """Значки — примитивами: символы вроде ⚙ есть не во всех шрифтах."""
+        if name in ("sword", "flask", "shield", "pouch", "settings"):
+            self._glyph(p, name, rect, colour)
+            return
         cx, cy = rect.center().x() + 1, rect.center().y() + 1
         p.setPen(QPen(colour, 1.5))
         p.setBrush(Qt.NoBrush)
@@ -676,7 +903,7 @@ class Overlay(QWidget):
             p.drawLine(cx + 5, cy - 5, cx - 5, cy + 5)
 
     def _paint_colheads(self, p: QPainter, w: int) -> None:
-        top = self.HEAD_H
+        top = self.HEAD_H + self.ACT_H
         p.fillRect(QRect(0, top, w, self.COL_H), self._bg(L2, chrome=True))
         fm = QFontMetrics(self.f_caps)
         base = top + fm.ascent() + 3
@@ -819,7 +1046,10 @@ class Overlay(QWidget):
             p.fillRect(QRect(x0, y, int((w - x0 - PAD) * value / top_v),
                              self.SKILL_H - 1), wash)
             xi = x0 + 4
-            icon = skill_icon(icons_dir, label, size, dpr)
+            if loot_mode:
+                icon = item_icon((r.get("ids") or {}).get(label, ""), size, dpr)
+            else:
+                icon = skill_icon(icons_dir, label, size, dpr)
             if icon is not None:
                 p.drawPixmap(xi, y + 2, icon)
                 xi += size + 4
@@ -971,6 +1201,7 @@ class Overlay(QWidget):
             "play": self.action_toggle_pause,
             "clear": self.action_clear,
             "copy": self.action_copy,
+            "settings": lambda: self.on_settings and self.on_settings(),
             "menu": lambda: self._show_menu(global_pos),
             "close": lambda: self.on_quit and self.on_quit(),
         }

@@ -401,6 +401,22 @@ check("одиночная запись по нику склеена со сво�
       [(r["name"], r["total"]) for r in m21.snapshot(DAMAGE)["rows"]], [("You", 300)])
 
 
+print("добыча: номера предметов")
+
+m22 = Meter(dict(DEFAULTS))
+m22.cfg["scope"] = "all"
+m22.feed(parse("2026.09.05 12:00:00",
+               "You have acquired [item:167000522;ver6;;;;]."))
+# Короткая форма без точек с запятой: раньше номер уезжал со скобкой,
+# и название не находилось никогда.
+m22.feed(parse("2026.09.05 12:00:01", "You have acquired [item:186000938]."))
+loot22 = m22.snapshot("loot")["rows"]
+ids22 = sorted((loot22[0].get("ids") or {}).values()) if loot22 else []
+check("номер вынут из обеих форм записи", ids22, ["167000522", "186000938"])
+check("в скобках и точках с запятой номер не остаётся",
+      [i for i in ids22 if not i.isdigit()], [])
+
+
 print("версии")
 
 from aionmeter import version as vermod

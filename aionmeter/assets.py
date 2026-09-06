@@ -22,6 +22,7 @@ _root: Path | None = None
 _root_done = False
 _skills: dict[str, str] | None = None
 _items: dict[str, list] | None = None
+_item_icons: dict[str, str] | None = None
 _manifest: dict | None = None
 
 
@@ -77,17 +78,39 @@ def skill_map() -> dict[str, str]:
     return _skills
 
 
+def _load_gz(name: str) -> dict:
+    base = root()
+    try:
+        return json.loads(gzip.decompress((base / name).read_bytes()).decode("utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
 def items() -> dict[str, list]:
     """Номер предмета -> [название, качество]."""
     global _items
     if _items is None:
-        base = root()
-        try:
-            blob = gzip.decompress((base / "items.json.gz").read_bytes())
-            _items = json.loads(blob.decode("utf-8"))
-        except (OSError, ValueError, TypeError):
-            _items = {}
+        _items = _load_gz("items.json.gz")
     return _items
+
+
+def item_icons() -> dict[str, str]:
+    """Номер предмета -> имя файла иконки без расширения."""
+    global _item_icons
+    if _item_icons is None:
+        _item_icons = _load_gz("item_icons.json.gz")
+    return _item_icons
+
+
+def item_icon_path(item_id: str) -> Path | None:
+    base = root()
+    if base is None or not item_id:
+        return None
+    stem = item_icons().get(str(item_id))
+    if not stem:
+        return None
+    path = base / "items" / (stem + ".png")
+    return path if path.is_file() else None
 
 
 def skill_icon_path(display: str) -> Path | None:
@@ -124,10 +147,10 @@ def class_icon_path(code: str) -> Path | None:
 
 
 def reload() -> None:
-    global _root, _root_done, _skills, _items, _manifest
+    global _root, _root_done, _skills, _items, _manifest, _item_icons
     _root = None
     _root_done = False
-    _skills = _items = _manifest = None
+    _skills = _items = _manifest = _item_icons = None
 
 
 def describe() -> str:

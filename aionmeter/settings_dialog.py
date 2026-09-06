@@ -150,6 +150,17 @@ class SettingsDialog(QDialog):
         self.ch_mobs.setChecked(self.cfg.get("hide_mobs", True))
         self.ch_pets = QCheckBox("Урон питомцев приписывать владельцу")
         self.ch_pets.setChecked(self.cfg.get("merge_pets", True))
+        self.sp_backfill = QSpinBox()
+        self.sp_backfill.setRange(0, 4096)
+        self.sp_backfill.setSingleStep(16)
+        self.sp_backfill.setSuffix(" КБ")
+        self.sp_backfill.setSpecialValueText("не дочитывать")
+        self.sp_backfill.setValue(int(self.cfg.get("backfill_kb", 0)))
+        form.addRow("Хвост лога при старте", self.sp_backfill)
+        form.addRow("", self._hint(
+            "Ноль — метр открывается пустым и считает только то, что было "
+            "после запуска. Больше нуля — подхватит и события до него."))
+
         self.ch_reflect = QCheckBox("Считать урон щита-отражателя")
         self.ch_reflect.setChecked(self.cfg.get("count_reflect", False))
         form.addRow("", self.ch_mobs)
@@ -234,6 +245,27 @@ class SettingsDialog(QDialog):
         form.addRow("", self._hint(
             "По умолчанию окно обычное, непрозрачное. Прозрачность нужна, "
             "только когда метр висит прямо поверх игры."))
+
+        self.ch_ontop = QCheckBox("Поверх всех окон")
+        self.ch_ontop.setChecked(self.cfg.get("always_on_top", True))
+        form.addRow("", self.ch_ontop)
+        form.addRow("", self._hint(
+            "Поверх ЭКСКЛЮЗИВНОГО полноэкранного режима не рисуется ничего — "
+            "так устроен Windows. Нужен оконный полноэкранный."))
+
+        self.ch_actions = QCheckBox("Показывать полосу крупных кнопок")
+        self.ch_actions.setChecked(self.cfg.get("show_actions", True))
+        form.addRow("", self.ch_actions)
+
+        self.sp_action = QSpinBox()
+        self.sp_action.setRange(28, 96)
+        self.sp_action.setSingleStep(4)
+        self.sp_action.setSuffix(" px")
+        self.sp_action.setValue(int(self.cfg.get("action_size", 48)))
+        form.addRow("Размер кнопок", self.sp_action)
+        form.addRow("", self._hint(
+            "Сторона квадратной кнопки. Полоса занимает столько же по высоте, "
+            "поэтому крупные кнопки съедают место у таблицы."))
 
         self.sl_opacity = QSlider(Qt.Horizontal)
         self.sl_opacity.setRange(30, 100)
@@ -391,6 +423,10 @@ class SettingsDialog(QDialog):
         cfg["count_reflect"] = self.ch_reflect.isChecked()
         cfg["metric"] = self.cb_metric.currentData()
         cfg["transparent"] = self.ch_transparent.isChecked()
+        cfg["always_on_top"] = self.ch_ontop.isChecked()
+        cfg["show_actions"] = self.ch_actions.isChecked()
+        cfg["action_size"] = self.sp_action.value()
+        cfg["backfill_kb"] = self.sp_backfill.value()
         cfg["show_loot"] = self.ch_loot.isChecked()
         cfg["icons_dir"] = self.ed_icons.text().strip()
         cfg["skill_icons_dir"] = self.ed_skill_icons.text().strip()

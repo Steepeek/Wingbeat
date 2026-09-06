@@ -496,7 +496,7 @@ class Meter:
         for who, bag in self.items.items():
             if not bag:
                 continue
-            entries, quality = [], {}
+            entries, quality, ids = [], {}, {}
             for raw, count in bag.most_common():
                 item_id = ""
                 if raw.startswith("[item:"):
@@ -509,13 +509,16 @@ class Meter:
                 label = name or (f"предмет {item_id}" if item_id else raw)
                 entries.append((label, count))
                 quality[label] = qual
+                # Иконка ищется по номеру, а не по названию: у предметов своя
+                # таблица, и названия там не уникальны.
+                ids[label] = item_id
             rows.append({
                 "name": who, "display": who, "total": sum(bag.values()),
                 "hits": len(bag), "dps": 0.0, "avg": 0.0, "crit": None, "max": 0,
                 "cls": self.actor_class(who), "section": "party",
                 "cls_name": skilldb.CLASSES.get(self.actor_class(who), ""),
                 "is_self": who == SELF, "is_party": who in self.party,
-                "skills": entries, "quality": quality,
+                "skills": entries, "quality": quality, "ids": ids,
             })
         return rows
 
