@@ -286,6 +286,9 @@ class Overlay(QWidget):
         self.f_small = QFont(fam, max(7, size - 3))
         self.f_caps = QFont(fam, max(6, size - 4), QFont.DemiBold)
         self.f_caps.setCapitalization(QFont.AllUppercase)
+        # Полоска сводки: крупный жирный кегль, отдельный от таблицы.
+        self.f_stat = QFont(fam, size + 3, QFont.Bold)
+        self.f_stat_cap = QFont(fam, size, QFont.DemiBold)
 
         fm = QFontMetrics(self.f_body)
         self.H = fm.height()
@@ -306,9 +309,11 @@ class Overlay(QWidget):
         self.LOOT_H = self.LOOT_ICON + 8
         self.SKILL_H = self.LOOT_H
         self.LOOT_MAX = LOOT_MAX_ITEMS
-        # Полоска опыта и кинаха: две строки с иконкой из клиента.
-        self.STATS_ICON = max(14, min(24, self.H))
-        self.STATS_H = ((self.STATS_ICON + 6) * 2
+        # Полоска опыта и кинары: две строки с иконкой из клиента. Вдвое
+        # крупнее строки таблицы — это сводка за сессию, на неё смотрят
+        # мельком и издалека, поэтому мелкий кегль тут бесполезен.
+        self.STATS_ICON = max(24, min(56, self.H * 2))
+        self.STATS_H = ((self.STATS_ICON + 8) * 2
                         if self.cfg.get("show_stats_strip", True) else 0)
         self.HEAD_H = self.H + 14           # вкладки стали кнопками, им нужен воздух
         # Панель действий: размер кнопки настраивается, потому что вкус на
@@ -1045,8 +1050,8 @@ class Overlay(QWidget):
         p.fillRect(QRect(0, top, w, self.STATS_H), self._bg(L2, chrome=True))
         loot = snap_.get("loot", {})
         rows = (("exp", "опыт", loot.get("exp", 0)),
-                ("kinah", "кинах", loot.get("kinah_in", 0)))
-        fm = QFontMetrics(self.f_small)
+                ("kinah", "кинара", loot.get("kinah_in", 0)))
+        fm = QFontMetrics(self.f_stat)
         icon = self.STATS_ICON
         row_h = self.STATS_H // 2
         for i, (key, label, value) in enumerate(rows):
@@ -1063,13 +1068,14 @@ class Overlay(QWidget):
                 p.drawEllipse(QRect(x + 2, y + (row_h - icon) // 2 + 2,
                                     icon - 4, icon - 4))
             x += icon + GAP
-            self._txt(p, x, base, label, INK3, self.f_small)
+            self._txt(p, x, base, label, INK2, self.f_stat_cap)
             mant, suf = fmt_ui(value)
             right = w - PAD
             if suf:
-                right = self._txt_right(p, right, base, suf, INK3, self.f_small)
-            self._txt_right(p, right, base, mant, INK2 if value else INK_MUTE,
-                            self.f_num)
+                right = self._txt_right(p, right, base, suf, INK2,
+                                        self.f_stat_cap)
+            self._txt_right(p, right, base, mant, INK if value else INK_MUTE,
+                            self.f_stat)
         p.fillRect(QRectF(0, top + self.STATS_H - 1, w, 1), RULE)
 
     def _paint_colheads(self, p: QPainter, w: int) -> None:
@@ -1335,7 +1341,7 @@ class Overlay(QWidget):
         slots = []
         # Опыт и кинах уехали в полоску под кнопками — в подвале они бы
         # просто дублировались. Здесь остаётся то, чему наверху места нет.
-        pairs = (("exp", "опыт"), ("ap", "AP"), ("kinah", "кинах"))
+        pairs = (("exp", "опыт"), ("ap", "AP"), ("kinah", "кинара"))
         if self.STATS_H:
             pairs = (("ap", "AP"), ("kills", "убито"), ("deaths", "смертей"))
         for key, label in pairs:

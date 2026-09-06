@@ -274,7 +274,7 @@ class SettingsDialog(QDialog):
             "Сторона квадратной кнопки. Полоса занимает столько же по высоте, "
             "поэтому крупные кнопки съедают место у таблицы."))
 
-        self.ch_strip = QCheckBox("Полоска опыта и кинаха под кнопками")
+        self.ch_strip = QCheckBox("Полоска опыта и кинары под кнопками")
         self.ch_strip.setChecked(self.cfg.get("show_stats_strip", True))
         form.addRow("", self.ch_strip)
 
