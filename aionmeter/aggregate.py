@@ -500,7 +500,11 @@ class Meter:
             for raw, count in bag.most_common():
                 item_id = ""
                 if raw.startswith("[item:"):
-                    item_id = raw[6:].split(";", 1)[0]
+                    # Клиент пишет две формы: "[item:167000522;ver6;;;;]" и
+                    # короткую "[item:186000938]". Резать только по ";" мало —
+                    # в короткой форме в номере оставалась скобка, и название
+                    # не находилось. Замер: 78 % против 100 % после правки.
+                    item_id = raw[6:].split(";", 1)[0].rstrip("]").strip()
                 name, qual, _grp = itemdb.lookup(item_id) if item_id else ("", "", "")
                 label = name or (f"предмет {item_id}" if item_id else raw)
                 entries.append((label, count))

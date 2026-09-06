@@ -400,6 +400,40 @@ m21.feed(parse("2026.09.04 15:07:00", "Steepeek inflicted 300 damage on Magus.")
 check("одиночная запись по нику склеена со своей строкой",
       [(r["name"], r["total"]) for r in m21.snapshot(DAMAGE)["rows"]], [("You", 300)])
 
+
+print("версии")
+
+from aionmeter import version as vermod
+
+check("разбор тега", vermod.as_tuple("v1.2.3"), (1, 2, 3))
+check("хвост после дефиса отбрасывается", vermod.as_tuple("0.4.0-beta2"), (0, 4, 0))
+check("нечисловая часть не роняет разбор", vermod.as_tuple("1.x.3"), (1, 0, 3))
+# Строковое сравнение здесь дало бы неверный ответ: "0.10.0" < "0.9.0".
+check("0.10.0 новее 0.9.0", vermod.is_newer("0.10.0", "0.9.0"), True)
+check("0.9.0 не новее 0.10.0", vermod.is_newer("0.9.0", "0.10.0"), False)
+check("та же версия не новее", vermod.is_newer("1.0.0", "1.0.0"), False)
+check("разная длина сравнивается по нулям", vermod.is_newer("1.0.1", "1.0"), True)
+check("префикс v не мешает", vermod.is_newer("v2.0.0", "1.9.9"), True)
+
+
+print("ассет-пак")
+
+from aionmeter import assets as assetsmod
+
+# Пака в тестовом окружении может не быть — это законно, и всё обязано
+# продолжать работать: иконок просто не будет.
+check("отсутствующее имя не находится", assetsmod.skill_icon_path(""), None)
+check("пустой код класса не находится", assetsmod.class_icon_path(""), None)
+check("таблица скиллов всегда словарь", isinstance(assetsmod.skill_map(), dict), True)
+check("таблица предметов всегда словарь", isinstance(assetsmod.items(), dict), True)
+
+# elementalist — имя файла эмблемы в самом клиенте. Без него у спиритмастера
+# не находилась иконка класса.
+check("у EL есть кандидат elementalist",
+      "elementalist" in skilldb.icon_candidates("EL"), True)
+check("кандидаты начинаются с кода в нижнем регистре",
+      skilldb.icon_candidates("RA")[0], "ra")
+
 print("агрегатор: класс по скиллам")
 
 m17 = Meter(dict(DEFAULTS))

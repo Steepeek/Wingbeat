@@ -43,6 +43,7 @@ from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication
                            QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygon)
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
+from . import assets
 from . import config as cfgmod
 from . import hotkeys as hk
 from . import itemdb
@@ -94,15 +95,15 @@ _ICON_EXT = (".png", ".gif", ".webp", ".dds", ".bmp", ".jpg")
 
 
 def class_icon(icons_dir: str, code: str, size: int, dpr: float = 1.0):
-    """Иконка класса из папки пользователя или None."""
-    if not icons_dir or not code:
+    """Эмблема класса: сначала папка пользователя, потом ассет-пак."""
+    if not code:
         return None
     key = (icons_dir, code, size, round(dpr, 2))
     if key in _ICON_CACHE:
         return _ICON_CACHE[key]
     pm = None
-    folder = Path(icons_dir)
-    if folder.is_dir():
+    folder = Path(icons_dir) if icons_dir else None
+    if folder is not None and folder.is_dir():
         by_stem = {}
         try:
             for f in folder.iterdir():
@@ -120,27 +121,46 @@ def class_icon(icons_dir: str, code: str, size: int, dpr: float = 1.0):
                 pm = loaded.scaled(px, px, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 pm.setDevicePixelRatio(dpr)
             break
+    if pm is None:
+        pm = _from_pack(assets.class_icon_path(code), size, dpr)
     _ICON_CACHE[key] = pm
     return pm
 
 
+def _from_pack(path, size: int, dpr: float):
+    """Иконка из ассет-пака. Пак — запасной вариант: папка пользователя выше."""
+    if path is None:
+        return None
+    loaded = QPixmap(str(path))
+    if loaded.isNull():
+        return None
+    px = max(1, int(round(size * dpr)))
+    pm = loaded.scaled(px, px, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    pm.setDevicePixelRatio(dpr)
+    return pm
+
+
 def skill_icon(icons_dir: str, name: str, size: int, dpr: float = 1.0):
-    """Иконка скилла из локальной папки или None."""
-    if not icons_dir or not name:
+    """Иконка скилла: сначала папка пользователя, потом ассет-пак."""
+    if not name:
         return None
     key = (icons_dir, "s:" + name, size, round(dpr, 2))
     if key in _ICON_CACHE:
         return _ICON_CACHE[key]
     pm = None
-    for ext in _ICON_EXT:
-        f = Path(icons_dir) / (name + ext)
-        if f.is_file():
-            loaded = QPixmap(str(f))
-            if not loaded.isNull():
-                px = max(1, int(round(size * dpr)))
-                pm = loaded.scaled(px, px, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                pm.setDevicePixelRatio(dpr)
-            break
+    if icons_dir:
+        for ext in _ICON_EXT:
+            f = Path(icons_dir) / (name + ext)
+            if f.is_file():
+                loaded = QPixmap(str(f))
+                if not loaded.isNull():
+                    px = max(1, int(round(size * dpr)))
+                    pm = loaded.scaled(px, px, Qt.KeepAspectRatio,
+                                       Qt.SmoothTransformation)
+                    pm.setDevicePixelRatio(dpr)
+                break
+    if pm is None:
+        pm = _from_pack(assets.skill_icon_path(name), size, dpr)
     _ICON_CACHE[key] = pm
     return pm
 

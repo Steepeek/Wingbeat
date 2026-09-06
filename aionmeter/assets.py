@@ -1,0 +1,141 @@
+"""Ассет-пак: иконки скиллов и классов, названия предметов.
+
+Пак собирается один раз инструментом сборки из клиента игры и кладётся
+рядом с программой. В рантайме здесь только чтение файлов — ни сети, ни
+криптографии, ни обращений к клиенту. Если пака нет, всё работает как
+раньше: метр показывает буквенные фишки классов и номера предметов.
+
+Порядок поиска: папка пользователя из настроек перебивает пак. Это
+сохраняет старую возможность подложить свои картинки.
+"""
+
+from __future__ import annotations
+
+import gzip
+import json
+import sys
+from pathlib import Path
+
+DIR_NAME = "assets"
+
+_root: Path | None = None
+_root_done = False
+_skills: dict[str, str] | None = None
+_items: dict[str, list] | None = None
+_manifest: dict | None = None
+
+
+def _candidates() -> list[Path]:
+    """Где искать пак, от самого специфичного к общему."""
+    out: list[Path] = []
+    frozen = getattr(sys, "frozen", False)
+    if frozen:
+        # PyInstaller --onedir: рядом с exe. _MEIPASS нужен для --onefile.
+        out.append(Path(sys.executable).parent / DIR_NAME)
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            out.append(Path(meipass) / DIR_NAME)
+    out.append(Path(__file__).resolve().parent.parent / DIR_NAME)
+    from . import config as cfgmod
+    out.append(cfgmod.config_dir() / DIR_NAME)
+    return out
+
+
+def root() -> Path | None:
+    """Папка пака или None. Ищется один раз за запуск."""
+    global _root, _root_done
+    if _root_done:
+        return _root
+    _root_done = True
+    for path in _candidates():
+        if (path / "manifest.json").is_file():
+            _root = path
+            break
+    return _root
+
+
+def manifest() -> dict:
+    global _manifest
+    if _manifest is None:
+        base = root()
+        try:
+            _manifest = json.loads((base / "manifest.json").read_text("utf-8"))
+        except (OSError, ValueError, TypeError):
+            _manifest = {}
+    return _manifest
+
+
+def skill_map() -> dict[str, str]:
+    """Отображаемое имя скилла -> имя файла иконки без расширения."""
+    global _skills
+    if _skills is None:
+        base = root()
+        try:
+            _skills = json.loads((base / "skills.json").read_text("utf-8"))
+        except (OSError, ValueError, TypeError):
+            _skills = {}
+    return _skills
+
+
+def items() -> dict[str, list]:
+    """Номер предмета -> [название, качество]."""
+    global _items
+    if _items is None:
+        base = root()
+        try:
+            blob = gzip.decompress((base / "items.json.gz").read_bytes())
+            _items = json.loads(blob.decode("utf-8"))
+        except (OSError, ValueError, TypeError):
+            _items = {}
+    return _items
+
+
+def skill_icon_path(display: str) -> Path | None:
+    """Путь к иконке по отображаемому имени скилла из лога.
+
+    Хвост « on you» клиент дописывает к имени в строках, адресованных
+    игроку. Без его снятия терялось 24 имени и 709 событий на живом логе.
+    """
+    base = root()
+    if base is None or not display:
+        return None
+    table = skill_map()
+    name = table.get(display)
+    if name is None and display.lower().endswith(" on you"):
+        name = table.get(display[:-7].rstrip())
+    if name is None:
+        return None
+    path = base / "skills" / (name + ".png")
+    return path if path.is_file() else None
+
+
+def class_icon_path(code: str) -> Path | None:
+    """Путь к эмблеме класса по коду вроде «RA»."""
+    base = root()
+    if base is None or not code:
+        return None
+    from . import skilldb
+    folder = base / "classes"
+    for alias in skilldb.icon_candidates(code):
+        path = folder / f"icon_emblem_{alias}.png"
+        if path.is_file():
+            return path
+    return None
+
+
+def reload() -> None:
+    global _root, _root_done, _skills, _items, _manifest
+    _root = None
+    _root_done = False
+    _skills = _items = _manifest = None
+
+
+def describe() -> str:
+    """Строка для окна настроек: что подхватилось."""
+    base = root()
+    if base is None:
+        return "не найден"
+    man = manifest()
+    return (f"{base}\n{man.get('skill_icons', 0)} иконок скиллов, "
+            f"{man.get('class_icons', 0)} классов, "
+            f"{man.get('items', 0)} предметов")

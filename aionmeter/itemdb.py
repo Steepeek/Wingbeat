@@ -38,15 +38,22 @@ _cache: dict[str, list] | None = None
 
 
 def load() -> dict[str, list]:
-    """Готовая база или пустой словарь. Читается один раз за запуск."""
+    """Готовая база или пустой словарь. Читается один раз за запуск.
+
+    Основа — ассет-пак, собранный из клиента. Файл в %APPDATA% кладётся
+    ПОВЕРХ: он появляется только если человек собрал базу сам утилитой,
+    и его выбор должен быть последним.
+    """
     global _cache
     if _cache is not None:
         return _cache
+    from . import assets
+    _cache = dict(assets.items())
     try:
         raw = json.loads((cfgmod.config_dir() / DB_NAME).read_text("utf-8"))
-        _cache = raw.get("items", {})
+        _cache.update(raw.get("items", {}))
     except (OSError, ValueError):
-        _cache = {}
+        pass
     return _cache
 
 

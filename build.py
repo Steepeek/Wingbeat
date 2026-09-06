@@ -18,6 +18,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent
+sys.path.insert(0, str(ROOT))
+
+from aionmeter.version import __version__
 
 EXCLUDE = [
     "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebChannel",
@@ -28,8 +31,19 @@ EXCLUDE = [
     "PySide6.QtPdf", "PySide6.QtPdfWidgets", "PySide6.QtSerialPort",
     "PySide6.QtBluetooth", "PySide6.QtPositioning", "PySide6.QtSensors",
     "PySide6.QtNetwork", "PySide6.QtSvg", "PySide6.QtPrintSupport",
-    "tkinter", "unittest", "pydoc", "doctest", "email", "http", "xml", "pdb",
+    "tkinter", "unittest", "pydoc", "doctest", "xml", "pdb",
 ]
+
+#: email и http РАНЬШЕ были в списке исключений — и это молча ломало urllib:
+#: он тянет http.client и email.message для заголовков. В замороженной
+#: сборке проверка обновлений падала бы с ImportError, а не с внятной
+#: ошибкой. Не возвращать их сюда.
+
+#: Что кладём рядом с exe. assets собирается из клиента отдельным
+#: инструментом и в git не хранится, поэтому его отсутствие — не ошибка
+#: сборки, а повод громко предупредить: без него у игрока не будет иконок.
+EXTRA_FILES = ("README.md", "LICENSE")
+EXTRA_DIRS = ("assets",)
 
 
 def main() -> int:
@@ -47,6 +61,7 @@ def main() -> int:
         "--noconfirm", "--clean",
         "--onedir", "--windowed", "--noupx",
         "--name", "AionMeter",
+        "--icon", str(ROOT / "docs" / "aionmeter.ico"),
         "--distpath", str(ROOT / "dist"),
         "--workpath", str(ROOT / "build"),
         "--specpath", str(ROOT / "build"),
@@ -61,11 +76,23 @@ def main() -> int:
         return result.returncode
 
     out = ROOT / "dist" / "AionMeter"
-    for extra in ("README.md", "LICENSE"):
+    for extra in EXTRA_FILES:
         shutil.copy(ROOT / extra, out / extra)
 
+    for folder in EXTRA_DIRS:
+        src = ROOT / folder
+        if src.is_dir():
+            shutil.copytree(src, out / folder, dirs_exist_ok=True)
+            n = sum(1 for _ in (out / folder).rglob("*"))
+            print(f"  {folder}: скопировано {n} файлов")
+        else:
+            print(f"\n  ВНИМАНИЕ: папки {folder} нет.")
+            print("  Сборка выйдет БЕЗ иконок и названий предметов — у игрока")
+            print("  будут буквенные фишки классов и номера вместо названий.")
+            print("  Собрать: py tools/private/extract_assets.py --game <клиент>")
+
     size = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
-    print(f"\nГотово: {out}  ({size / 1024 / 1024:.0f} МБ)")
+    print(f"\nГотово: {out}  ({size / 1024 / 1024:.0f} МБ), версия {__version__}")
     print("Раздавать: заархивировать эту папку целиком.")
     return 0
 

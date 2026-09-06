@@ -29,6 +29,7 @@ DEFAULTS: dict = {
     "hide_mobs": True,
     "merge_pets": True,          # урон питомцев приписывать владельцу
     "count_reflect": False,      # считать урон щита-отражателя (числа фиктивны)
+    "check_updates": True,       # смотреть на GitHub, вышла ли версия новее
     "columns": ["dmg", "dps", "pct", "hits"],
     "max_rows": 12,
     "icons_dir": "",             # папка с иконками классов; пусто = без иконок

@@ -61,12 +61,14 @@ ICON_ALIASES: dict[str, tuple[str, ...]] = {
     "AS": ("sin", "assassin"),
     "RA": ("ranger", "archer"),
     "WI": ("sorc", "sorcerer", "wizard"),
-    "EL": ("sm", "spiritmaster", "summoner"),
+    # elementalist — имя файла в EMBLEM.pak самого клиента; без него эмблема
+    # спиритмастера не находилась в ассет-паке.
+    "EL": ("elementalist", "sm", "spiritmaster", "summoner"),
     "PR": ("cleric", "priest"),
     "CH": ("chanter",),
     "Ba": ("bard", "songweaver", "muse"),
     "Gu": ("gunner", "gunslinger"),
-    "RI": ("aethertech", "rider", "technist"),
+    "RI": ("aethertech", "rider", "technist", "engineer"),
 }
 
 

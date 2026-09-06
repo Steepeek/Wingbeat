@@ -17,19 +17,31 @@ os.environ.setdefault("QT_QPA_PLATFORM", "windows:fontengine=freetype")
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
+from aionmeter import applog
 from aionmeter import config as cfgmod
+from aionmeter import updates
 from aionmeter.engine import Engine
 from aionmeter.overlay import Overlay, make_icon
 from aionmeter.settings_dialog import SettingsDialog
+from aionmeter.version import __version__
 
 
 class App:
     def __init__(self) -> None:
+        # Первый запуск определяем ДО load(): тот создаёт файл настроек.
+        self.first_run = not cfgmod.config_path().exists()
+
+        applog.setup()
+        applog.install_excepthook()
+
         self.qt = QApplication(sys.argv)
         self.qt.setQuitOnLastWindowClosed(False)
         self.qt.setApplicationName("AionMeter")
+        self.qt.setApplicationVersion(__version__)
         self.icon = make_icon()
         self.qt.setWindowIcon(self.icon)
 
@@ -45,6 +57,72 @@ class App:
         self._build_tray()
         self._start_or_configure()
         self._warn_hotkeys()
+        applog.describe_environment(self.cfg)
+        self._greet()
+        self._check_updates()
+
+    def _greet(self) -> None:
+        """Первый запуск: сказать, что метр живёт в трее, и что найдено.
+
+        Оверлей появляется без рамки и без кнопки в панели задач, поэтому
+        человек, не увидевший подсказки, не догадается, где искать настройки.
+        """
+        if not self.first_run:
+            return
+        from aionmeter import assets
+        where = cfgmod.resolve_log_path(self.cfg)
+        if where:
+            body = ("Клиент найден, читаю Chat.log.\n"
+                    "Значок в трее — настройки, пауза, выход.")
+        else:
+            body = ("Клиент не нашёлся — укажите папку игры в настройках.\n"
+                    "Значок метра в трее, рядом с часами.")
+        if assets.root() is None:
+            body += "\n\nАссет-пак не найден: иконок и названий не будет."
+        self.tray.showMessage(f"AionMeter {__version__}", body,
+                              QSystemTrayIcon.Information, 9000)
+
+    def _check_updates(self) -> None:
+        if not self.cfg.get("check_updates", True):
+            return
+
+        def announce(info: dict) -> None:
+            # Колбэк приходит из фонового потока: трогать Qt оттуда нельзя,
+            # поэтому перебрасываем в главный через однократный таймер.
+            QTimer.singleShot(0, lambda: self._show_update(info))
+
+        updates.check_async(announce)
+
+    def _show_update(self, info: dict) -> None:
+        applog.log.info("доступна версия %s (у нас %s)", info["tag"], __version__)
+        self.tray.showMessage(
+            "AionMeter", f"Вышла версия {info['tag']} — "
+            f"скачать можно на странице релизов.\nСейчас установлена {__version__}.",
+            QSystemTrayIcon.Information, 10000)
+        self._update_info = info
+
+    def _check_updates_now(self) -> None:
+        """Ручная проверка: в отличие от фоновой, отвечает и когда всё свежее."""
+        def done(info: dict) -> None:
+            QTimer.singleShot(0, lambda: self._show_update(info))
+
+        def run() -> None:
+            info = updates.fetch()
+            if info is None:
+                msg = "Не удалось проверить — нет связи с GitHub."
+            elif updates.is_newer_than_current(info["tag"]):
+                done(info)
+                return
+            else:
+                msg = f"Установлена последняя версия ({__version__})."
+            QTimer.singleShot(0, lambda: self.tray.showMessage(
+                "AionMeter", msg, QSystemTrayIcon.Information, 6000))
+
+        import threading
+        threading.Thread(target=run, name="update-manual", daemon=True).start()
+
+    def _open_log_folder(self) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(applog.path().parent)))
 
     # -- трей нужен, потому что при включённом «клик насквозь»
     #    по самому оверлею кликнуть уже нельзя --
@@ -59,6 +137,9 @@ class App:
         menu.addAction("Клик насквозь", self.overlay.action_toggle_click)
         menu.addSeparator()
         menu.addAction("Настройки…", self.open_settings)
+        menu.addAction("Папка с логом программы", self._open_log_folder)
+        self.act_update = menu.addAction("Проверить обновления",
+                                         self._check_updates_now)
         menu.addAction("Выход", self.quit)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(
