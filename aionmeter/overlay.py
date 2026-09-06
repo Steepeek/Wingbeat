@@ -272,6 +272,10 @@ class Overlay(QWidget):
         self.ICON = max(12, min(20, self.H - 5))
         self.BTN = self.H + 4
         self.TAB_ICON = max(16, min(26, self.H + 3))
+        # Строка добычи вчетверо выше строки разбора по скиллам. Иконки в
+        # паке лежат 64x64 — выше этого масштабировать нечего, будет мыло.
+        self.LOOT_ICON = max(24, min(64, int(self.cfg.get("loot_icon", 52))))
+        self.LOOT_H = self.LOOT_ICON + 8
         self.HEAD_H = self.H + 14           # вкладки стали кнопками, им нужен воздух
         # Панель действий: размер кнопки настраивается, потому что вкус на
         # «достаточно крупно» у всех разный, а места в оверлее мало.
@@ -1037,39 +1041,73 @@ class Overlay(QWidget):
 
         x0 = PAD + self.ICON + GAP
         icons_dir = cfgmod.skill_icons_dir(self.cfg)
-        size = self.SKILL_H - 4
-        fm = QFontMetrics(self.f_small)
+        # Добыча — витрина: там смотрят, ЧТО выпало, и иконка важнее плотности.
+        # Разбор по скиллам, наоборот, читают списком, и ему нужна компактность.
+        step = self.LOOT_H if loot_mode else self.SKILL_H
+        size = (self.LOOT_ICON if loot_mode else self.SKILL_H - 4)
+        f_name = self.f_body if loot_mode else self.f_small
+        fm = QFontMetrics(f_name)
+        fq = QFontMetrics(self.f_small)
         start = y
         for label, value in items:
-            if y + self.SKILL_H > bottom:
+            if y + step > bottom:
                 break
             p.fillRect(QRect(x0, y, int((w - x0 - PAD) * value / top_v),
-                             self.SKILL_H - 1), wash)
+                             step - 1), wash)
             xi = x0 + 4
             if loot_mode:
                 icon = item_icon((r.get("ids") or {}).get(label, ""), size, dpr)
             else:
                 icon = skill_icon(icons_dir, label, size, dpr)
             if icon is not None:
-                p.drawPixmap(xi, y + 2, icon)
-                xi += size + 4
-            base = y + fm.ascent() + 2
+                p.drawPixmap(xi, y + (step - size) // 2, icon)
+                xi += size + GAP
+            elif loot_mode:
+                # Пустая рамка вместо картинки: без неё строки без иконки
+                # съезжают влево и список выглядит рваным.
+                p.setPen(QPen(HAIR, 1))
+                p.setBrush(Qt.NoBrush)
+                p.drawRoundedRect(QRectF(xi + 0.5, y + (step - size) // 2 + 0.5,
+                                         size - 1, size - 1), R_CHIP, R_CHIP)
+                xi += size + GAP
+
             colour = INK2
+            qual = ""
             if loot_mode:
                 qual = (r.get("quality") or {}).get(label, "")
                 colour = QColor(itemdb.QUALITY_COLOURS.get(qual, "#E9EEF3"))                     if qual else INK3
-            self._txt(p, xi, base, fm.elidedText(label, Qt.ElideRight, int(w * 0.46)),
-                      colour, self.f_small)
-            right = w - PAD
+
             if loot_mode:
-                self._txt_right(p, right, base, f"x{value}", INK2, self.f_small)
+                # Две строки: название и словом качество — иначе высокая
+                # строка выглядит просто растянутой пустотой.
+                qname = itemdb.QUALITY_NAMES.get(qual, "")
+                if qname:
+                    total_h = fm.height() + fq.height()
+                    base = y + (step - total_h) // 2 + fm.ascent()
+                    self._txt(p, xi, base,
+                              fm.elidedText(label, Qt.ElideRight, int(w * 0.5)),
+                              colour, f_name)
+                    self._txt(p, xi, base + fq.height(), qname, INK_MUTE,
+                              self.f_small)
+                else:
+                    base = y + (step + fm.ascent() - fm.descent()) // 2
+                    self._txt(p, xi, base,
+                              fm.elidedText(label, Qt.ElideRight, int(w * 0.5)),
+                              colour, f_name)
+                self._txt_right(p, w - PAD,
+                                y + (step + fm.ascent() - fm.descent()) // 2,
+                                f"x{value}", INK2, f_name)
             else:
+                base = y + fm.ascent() + 2
+                self._txt(p, xi, base,
+                          fm.elidedText(label, Qt.ElideRight, int(w * 0.46)),
+                          colour, f_name)
                 right = self._txt_right(
-                    p, right, base, f"{100.0 * value / (r['total'] or 1):.0f}%",
+                    p, w - PAD, base, f"{100.0 * value / (r['total'] or 1):.0f}%",
                     INK3, self.f_small) - GAP
                 mant, suf = fmt_ui(value)
                 self._txt_right(p, right, base, mant + suf, INK2, self.f_small)
-            y += self.SKILL_H
+            y += step
         p.fillRect(QRectF(snap(x0 - 4, dpr), start, snap(1, dpr), y - start), HAIR)
         return y
 
