@@ -208,6 +208,15 @@ def panel_pixmap():
     return _ART_CACHE["panel"]
 
 
+def header_pixmap():
+    """Фактура шапки и полосы кнопок. Растягивается на всю ширину."""
+    if "header" not in _ART_CACHE:
+        path = assets.ui_icon_path("header")
+        pm = QPixmap(str(path)) if path else None
+        _ART_CACHE["header"] = None if (pm is None or pm.isNull()) else pm
+    return _ART_CACHE["header"]
+
+
 def ui_icon(name: str, size: int, dpr: float = 1.0):
     """Иконка интерфейса из ассет-пака: kinah, exp, autoattack."""
     if not name:
@@ -766,7 +775,14 @@ class Overlay(QWidget):
     # -- шапка --------------------------------------------------------------
 
     def _paint_head(self, p: QPainter, w: int, snap_: dict) -> None:
-        p.fillRect(QRect(0, 0, w, self.HEAD_H + self.ACT_H), self._bg(L2, chrome=True))
+        chrome_h = self.HEAD_H + self.ACT_H
+        p.fillRect(QRect(0, 0, w, chrome_h), self._bg(L2, chrome=True))
+        # Фактура шапки: растягиваем, а не повторяем. Замер по картинке —
+        # отклонение вертикальных срезов медианой 12 из 255, то есть она и
+        # так почти однородна, а растяжение убирает остаток.
+        hdr = header_pixmap() if self.cfg.get("art_panel", True) else None
+        if hdr is not None:
+            p.drawPixmap(QRect(0, 0, w, chrome_h), hdr)
         fm = QFontMetrics(self.f_tab)
         base = (self.HEAD_H + fm.ascent() - fm.descent()) // 2
         cur = self.cfg.get("metric", "damage")
