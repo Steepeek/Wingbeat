@@ -90,10 +90,6 @@ CAPTIONS = {
 }
 #: На вкладке добычи нет ни DPS, ни критов — там считают предметы.
 LOOT_COLUMNS = ("dmg", "pct", "hits")
-#: Сколько видов добычи держим в раскрытой строке. Прокрутка есть,
-#: поэтому потолок нужен только против совсем уж длинных списков.
-LOOT_MAX_ITEMS = 60
-
 #: Подпись строки автоатаки. Вынесена в константу: по ней же ищется иконка.
 AUTOATTACK = "автоатака"
 COL_ORDER = ("dmg", "dps", "pct", "hits", "crit")
@@ -308,7 +304,6 @@ class Overlay(QWidget):
         self.LOOT_ICON = self.ICON
         self.LOOT_H = self.ICON + 8
         self.SKILL_H = self.LOOT_H
-        self.LOOT_MAX = LOOT_MAX_ITEMS
         self.STATS_ICON = self.ICON
         self.STATS_H = ((self.ICON + 8) * 2
                         if self.cfg.get("show_stats_strip", True) else 0)
@@ -1197,19 +1192,15 @@ class Overlay(QWidget):
 
     def _paint_skills(self, p: QPainter, r: dict, y: int, w: int, bottom: int,
                       dpr: float) -> int:
+        # Потолка на длину списка нет намеренно. Он был (6 у скиллов, 12 у
+        # добычи) и молча резал настоящие данные: на живом логе у своей же
+        # строки 92 скилла урона, 81 хила и 382 вида добычи. Убрать его
+        # ничего не стоит, потому что ниже рисуются только видимые строки,
+        # а высота считается арифметикой — цена кадра не зависит от длины.
         loot_mode = self.cfg.get("metric") == "loot"
-        skills = r.get("skills") or []
-        if loot_mode:
-            # Раньше стояло 12, и при 19 видах добычи семь просто пропадали.
-            # Теперь список прокручивается, поэтому потолок нужен только
-            # чтобы не рисовать сотни строк на редком складском логе.
-            items = list(skills[:self.LOOT_MAX])
-        else:
-            auto = max(0, r["total"] - sum(v for _k, v in skills))
-            # Было 6, и прокрутка в разборе по скиллам не работала просто
-            # потому, что листать было нечего: остальные скиллы в список
-            # даже не попадали.
-            items = list(skills[:self.LOOT_MAX])
+        items = list(r.get("skills") or [])
+        if not loot_mode:
+            auto = max(0, r["total"] - sum(v for _k, v in items))
             if auto > 0:
                 items.append((AUTOATTACK, auto))
         if not items:
@@ -1230,13 +1221,13 @@ class Overlay(QWidget):
         fq = QFontMetrics(self.f_small)
         start = y
         top_edge = self.HEAD_H + self.ACT_H + self.STATS_H + self.COL_H + 1
-        for label, value in items:
-            # Считаем высоту всегда, рисуем только видимое: прокрутке нужна
-            # полная высота содержимого, а тратить кадр на строки за краем
-            # окна незачем.
-            if y + step < top_edge or y > bottom:
-                y += step
-                continue
+        # Все строки списка одной высоты, поэтому видимый кусок вычисляется,
+        # а не ищется перебором: цикл идёт по десятку строк на экране, а не
+        # по всем четырёмстам. Именно это и позволяет обойтись без потолка.
+        first = max(0, (top_edge - y) // step)
+        last = min(len(items), (bottom - y) // step + 2)
+        y += first * step
+        for label, value in items[first:last]:
             p.fillRect(QRect(x0, y, int((w - x0 - PAD) * value / top_v),
                              step - 1), wash)
             xi = x0 + 4
@@ -1297,6 +1288,9 @@ class Overlay(QWidget):
                 mant, suf = fmt_ui(value)
                 self._txt_right(p, right, base, mant + suf, INK2, self.f_small)
             y += step
+        # Возвращаем нижнюю границу ВСЕГО списка, а не отрисованной части:
+        # по ней считается высота содержимого для прокрутки.
+        y = start + len(items) * step
         p.fillRect(QRectF(snap(x0 - 4, dpr), start, snap(1, dpr), y - start), HAIR)
         return y
 
