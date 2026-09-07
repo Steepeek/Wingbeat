@@ -282,11 +282,11 @@ class SettingsDialog(QDialog):
         self.sp_loot.setRange(20, 64)
         self.sp_loot.setSingleStep(4)
         self.sp_loot.setSuffix(" px")
-        self.sp_loot.setValue(int(self.cfg.get("loot_icon", 52)))
-        form.addRow("Иконки в разборе", self.sp_loot)
+        self.sp_loot.setValue(int(self.cfg.get("icon_size", 37)))
+        form.addRow("Размер иконок", self.sp_loot)
         form.addRow("", self._hint(
-            "Один размер и на добычу, и на разбор по скиллам; высота строки "
-            "подстраивается. Выше 64 смысла нет — столько в самом клиенте."))
+            "Один размер на все иконки сразу: эмблема класса, скилл, предмет, "
+            "опыт, кинара. Высота строк подстраивается. Выше 64 смысла нет — столько в самом клиенте."))
 
         self.sl_opacity = QSlider(Qt.Horizontal)
         self.sl_opacity.setRange(30, 100)
@@ -448,7 +448,7 @@ class SettingsDialog(QDialog):
         cfg["always_on_top"] = self.ch_ontop.isChecked()
         cfg["show_actions"] = self.ch_actions.isChecked()
         cfg["action_size"] = self.sp_action.value()
-        cfg["loot_icon"] = self.sp_loot.value()
+        cfg["icon_size"] = self.sp_loot.value()
         cfg["show_stats_strip"] = self.ch_strip.isChecked()
         cfg["backfill_kb"] = self.sp_backfill.value()
         cfg["show_loot"] = self.ch_loot.isChecked()

@@ -292,30 +292,32 @@ class Overlay(QWidget):
 
         fm = QFontMetrics(self.f_body)
         self.H = fm.height()
-        self.ROW_H = self.H + 8
         self.HEAD_H = self.H + 8
         self.COL_H = QFontMetrics(self.f_caps).ascent() + 6
         self.FOOT_H = QFontMetrics(self.f_small).height() + 6
         self.SKILL_H = QFontMetrics(self.f_small).height() + 4
         self.RAIL = max(2, round(self.H / 8))
-        self.ICON = max(12, min(20, self.H - 5))
         self.BTN = self.H + 4
-        self.TAB_ICON = max(16, min(26, self.H + 3))
-        # Строка добычи вчетверо выше строки разбора по скиллам. Иконки в
-        # паке лежат 64x64 — выше этого масштабировать нечего, будет мыло.
-        # Один размер и на добычу, и на разбор по скиллам: строки должны
-        # выглядеть одинаково, на какой бы вкладке ни находились.
-        self.LOOT_ICON = max(20, min(64, int(self.cfg.get("loot_icon", 44))))
-        self.LOOT_H = self.LOOT_ICON + 8
+
+        # ОДИН размер на все иконки, которые изображают вещь: эмблема класса,
+        # иконка скилла, предмета, опыта и кинары. Раньше они жили каждая по
+        # своим правилам — 16, 44 и 42 пикселя рядом друг с другом — и это
+        # бросалось в глаза. Всё, что ниже, считается от этого числа, включая
+        # высоты строк: подгонять их отдельно значит снова разъехаться.
+        self.ICON = max(20, min(64, int(self.cfg.get("icon_size", 37))))
+        self.LOOT_ICON = self.ICON
+        self.LOOT_H = self.ICON + 8
         self.SKILL_H = self.LOOT_H
         self.LOOT_MAX = LOOT_MAX_ITEMS
-        # Полоска опыта и кинары: две строки с иконкой из клиента. Вдвое
-        # крупнее строки таблицы — это сводка за сессию, на неё смотрят
-        # мельком и издалека, поэтому мелкий кегль тут бесполезен.
-        self.STATS_ICON = max(24, min(56, self.H * 2))
-        self.STATS_H = ((self.STATS_ICON + 8) * 2
+        self.STATS_ICON = self.ICON
+        self.STATS_H = ((self.ICON + 8) * 2
                         if self.cfg.get("show_stats_strip", True) else 0)
-        self.HEAD_H = self.H + 14           # вкладки стали кнопками, им нужен воздух
+        # Строка игрока обязана вмещать эмблему класса, иначе та обрежется.
+        self.ROW_H = max(self.H + 8, self.ICON + 6)
+        # Значок вкладки чуть меньше: он рядом с текстом подписи, и вровень
+        # с ним смотрится соразмернее, чем вровень с иконкой предмета.
+        self.TAB_ICON = max(16, min(self.ICON, self.H + 6))
+        self.HEAD_H = max(self.H + 14, self.TAB_ICON + 10)
         # Панель действий: размер кнопки настраивается, потому что вкус на
         # «достаточно крупно» у всех разный, а места в оверлее мало.
         self.ACT = max(28, min(96, int(self.cfg.get("action_size", 48))))
@@ -1204,7 +1206,10 @@ class Overlay(QWidget):
             items = list(skills[:self.LOOT_MAX])
         else:
             auto = max(0, r["total"] - sum(v for _k, v in skills))
-            items = list(skills[:6])
+            # Было 6, и прокрутка в разборе по скиллам не работала просто
+            # потому, что листать было нечего: остальные скиллы в список
+            # даже не попадали.
+            items = list(skills[:self.LOOT_MAX])
             if auto > 0:
                 items.append((AUTOATTACK, auto))
         if not items:
