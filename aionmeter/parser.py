@@ -133,6 +133,8 @@ RE_XP = re.compile(
 
 # Добыча за сессию. Точные формулировки из STR_MSG_* клиента.
 RE_AP = re.compile(r"^You have gained (?P<amount>" + NUM + r") Abyss Points\.$")
+RE_GLORY_GAIN = re.compile(
+    r"^You have gained (?P<amount>" + NUM + r") Glory Points\.$")
 RE_KINAH_IN = re.compile(
     r"^You (?:have earned|received(?: a refund of)?) (?P<amount>" + NUM + r") Kinah")
 RE_KINAH_OUT = re.compile(r"^You spent (?P<amount>" + NUM + r") Kinah\.$")
@@ -346,6 +348,10 @@ def parse(ts: str, body: str) -> Event | None:
         m = RE_AP.match(body)
         if m:
             return Event("loot", ts_to_epoch(ts), amount=to_int(m["amount"]), extra="ap")
+        m = RE_GLORY_GAIN.match(body)
+        if m:
+            return Event("loot", ts_to_epoch(ts),
+                         amount=to_int(m["amount"]), extra="glory")
         m = RE_KINAH_IN.match(body)
         if m:
             return Event("loot", ts_to_epoch(ts), amount=to_int(m["amount"]), extra="kinah_in")

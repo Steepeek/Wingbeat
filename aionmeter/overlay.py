@@ -97,7 +97,8 @@ CAPTIONS = {
 LOOT_COLUMNS = ("dmg", "pct", "hits")
 #: Полоска сводки: значок, подпись, ключ в счётчике добычи. Порядок сверху вниз.
 STATS_ROWS = (("exp", "опыт", "exp"), ("kinah", "кинара", "kinah_in"),
-              ("ap", "АП", "ap"), ("kills", "убито", "kills"))
+              ("ap", "АП", "ap"), ("glory", "слава", "glory"),
+              ("kills", "убито", "kills"))
 
 #: Подпись строки автоатаки. Вынесена в константу: по ней же ищется иконка.
 AUTOATTACK = "автоатака"
@@ -314,8 +315,8 @@ class Overlay(QWidget):
         self.LOOT_H = self.ICON + 8
         self.SKILL_H = self.LOOT_H
         self.STATS_ICON = self.ICON
-        self.STATS_H = ((self.ICON + 6) * len(STATS_ROWS)
-                        if self.cfg.get("show_stats_strip", True) else 0)
+        self.STATS_H = 0
+        self._measure_stats(self.width())
         # Строка игрока обязана вмещать эмблему класса, иначе та обрежется.
         self.ROW_H = max(self.H + 8, self.ICON + 6)
         # Значок вкладки чуть меньше: он рядом с текстом подписи, и вровень
@@ -331,6 +332,9 @@ class Overlay(QWidget):
         self._measure_columns()
 
     def resizeEvent(self, e) -> None:
+        # Размер берём из события: self.width() внутри resizeEvent
+        # ещё старый, и полоска сводки считалась бы по прежней ширине.
+        self._measure_stats(e.size().width())
         self._colcache.clear()
         super().resizeEvent(e)
 
@@ -641,6 +645,9 @@ class Overlay(QWidget):
         p.setRenderHint(QPainter.TextAntialiasing)
         w, h = self.width(), self.height()
         dpr = self.devicePixelRatioF()
+        # Раскладка полоски сводки зависит от ширины. Считаем здесь, а не
+        # только в resizeEvent: скрытое окно события ресайза не получает.
+        self._measure_stats(w)
 
         if self.cfg.get("transparent"):
             path = QPainterPath()
@@ -1045,7 +1052,7 @@ class Overlay(QWidget):
             p.drawLine(cx + 5, cy - 5, cx - 5, cy + 5)
 
     def _paint_stats(self, p: QPainter, w: int, snap_: dict, dpr: float) -> None:
-        """Опыт и кинах двумя полосками под кнопками.
+        """Сводка за сессию под кнопками: опыт, кинара, АП, слава, убито.
 
         Раньше они делили подвал с таймером и итогом и вытеснялись оттуда
         при узком окне: в футере стоит `slots[:2]`, и третья величина просто
@@ -1056,14 +1063,21 @@ class Overlay(QWidget):
         p.fillRect(QRect(0, top, w, self.STATS_H), self._bg(L2, chrome=True))
         loot = snap_.get("loot", {})
         rows = tuple((key, label, loot.get(src, 0)) for key, label, src in STATS_ROWS)
+        cols = self._stats_cols(w)
+        per_col = -(-len(rows) // cols)          # округление вверх
         fm = QFontMetrics(self.f_stat)
         icon = self.STATS_ICON
-        row_h = self.STATS_H // len(STATS_ROWS)
+        row_h = self.STATS_H // per_col
+        col_w = (w - PAD) // cols
         for i, (key, label, value) in enumerate(rows):
-            y = top + i * row_h
+            # Порядок чтения слева направо, сверху вниз — тот же, в котором
+            # величины перечислены, независимо от числа столбцов.
+            col, line = i % cols, i // cols
+            y = top + line * row_h
+            x0 = PAD + col * col_w
             base = y + (row_h + fm.ascent() - fm.descent()) // 2
             pm = ui_icon(key, icon, dpr)
-            x = PAD
+            x = x0
             if pm is not None:
                 p.drawPixmap(x, y + (row_h - icon) // 2, pm)
             else:
@@ -1075,13 +1089,49 @@ class Overlay(QWidget):
             x += icon + GAP
             self._txt(p, x, base, label, INK2, self.f_stat_cap)
             mant, suf = fmt_ui(value)
-            right = w - PAD
+            right = x0 + col_w - (PAD if col == cols - 1 else GROUP)
             if suf:
                 right = self._txt_right(p, right, base, suf, INK2,
                                         self.f_stat_cap)
             self._txt_right(p, right, base, mant, INK if value else INK_MUTE,
                             self.f_stat)
         p.fillRect(QRectF(0, top + self.STATS_H - 1, w, 1), RULE)
+
+    def _measure_stats(self, w: int) -> None:
+        # Ширина не изменилась — считать нечего.
+        if getattr(self, "_stats_w", None) == w:
+            return
+        self._stats_w = w
+        """Высота полоски сводки зависит от того, в сколько столбцов она легла.
+
+        Считается от ширины окна, поэтому пересчитывается при каждом
+        изменении размера, а не один раз вместе со шрифтами.
+        """
+        if not self.cfg.get("show_stats_strip", True):
+            self.STATS_H = 0
+            return
+        lines = -(-len(STATS_ROWS) // self._stats_cols(max(1, w)))
+        self.STATS_H = (self.ICON + 6) * lines
+
+    def _stats_cols(self, w: int) -> int:
+        """Сколько столбцов у полоски сводки.
+
+        Пять величин в один столбец — это 215 px высоты, треть окна. По
+        ширине место есть почти всегда, поэтому раскладываем в два столбца,
+        как только они помещаются: строка сводки это значок, подпись и
+        число, и вдвое уже она читается так же.
+        """
+        if len(STATS_ROWS) < 3:
+            return 1
+        # Ширину ячейки меряем по самой длинной подписи и по правдоподобному
+        # числу, а не берём на глаз: при мелком шрифте два столбца влезают
+        # заметно раньше, при крупном — позже.
+        cap = QFontMetrics(self.f_stat_cap)
+        num = QFontMetrics(self.f_stat)
+        label_w = max(cap.horizontalAdvance(lbl) for _k, lbl, _s in STATS_ROWS)
+        need = (self.STATS_ICON + GAP + label_w + GROUP
+                + num.horizontalAdvance("888,8") + cap.horizontalAdvance("M"))
+        return 2 if w >= need * 2 + PAD * 2 + GROUP else 1
 
     def _paint_colheads(self, p: QPainter, w: int) -> None:
         top = self.HEAD_H + self.ACT_H + self.STATS_H
