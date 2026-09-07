@@ -274,6 +274,16 @@ class SettingsDialog(QDialog):
             "Сторона квадратной кнопки. Полоса занимает столько же по высоте, "
             "поэтому крупные кнопки съедают место у таблицы."))
 
+        self.ch_frame = QCheckBox("Рисованная рамка окна")
+        self.ch_frame.setChecked(self.cfg.get("art_frame", True))
+        form.addRow("", self.ch_frame)
+        self.ch_panel = QCheckBox("Фактура металла под таблицей")
+        self.ch_panel.setChecked(self.cfg.get("art_panel", True))
+        form.addRow("", self.ch_panel)
+        form.addRow("", self._hint(
+            "Оформление берётся из ассет-пака. Без него окно рисуется как раньше — "
+            "простым кантом и заливкой."))
+
         self.ch_strip = QCheckBox("Полоска опыта и кинары под кнопками")
         self.ch_strip.setChecked(self.cfg.get("show_stats_strip", True))
         form.addRow("", self.ch_strip)
@@ -450,6 +460,8 @@ class SettingsDialog(QDialog):
         cfg["action_size"] = self.sp_action.value()
         cfg["icon_size"] = self.sp_loot.value()
         cfg["show_stats_strip"] = self.ch_strip.isChecked()
+        cfg["art_frame"] = self.ch_frame.isChecked()
+        cfg["art_panel"] = self.ch_panel.isChecked()
         cfg["backfill_kb"] = self.sp_backfill.value()
         cfg["show_loot"] = self.ch_loot.isChecked()
         cfg["icons_dir"] = self.ed_icons.text().strip()
