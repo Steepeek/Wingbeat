@@ -41,8 +41,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication,
-                           QIcon, QLinearGradient, QPainter, QPainterPath, QPen,
-                           QPixmap, QPolygon)
+                           QIcon, QImage, QLinearGradient, QPainter,
+                           QPainterPath, QPen, QPixmap, QPolygon)
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
 from . import assets
@@ -241,6 +241,38 @@ def ui_icon(name: str, size: int, dpr: float = 1.0):
         return _ICON_CACHE[key]
     pm = _from_pack(assets.ui_icon_path(name), size, dpr)
     _ICON_CACHE[key] = pm
+    return pm
+
+
+_TAB_CACHE: dict = {}
+
+
+def tab_icon(key: str, size: int, dpr: float, lit: bool):
+    """Значок вкладки — писаный спрайт из клиента, если пак собран.
+
+    Неактивная вкладка обесцвечивается. Перекрасить писаный спрайт, как
+    вектор, нельзя, а состояние показывать надо: одной прозрачности мало,
+    активная и соседняя различались едва. Заодно снимается вопрос четырёх
+    насыщенных пятен в полосе, где цветом кодируются классы, «это ты» и
+    «бой идёт»: цвет остаётся ровно у той вкладки, на которой стоишь.
+    """
+    ck = (key, size, round(dpr, 2), lit)
+    if ck in _TAB_CACHE:
+        return _TAB_CACHE[ck]
+    pm = _from_pack(assets.ui_icon_path("tab_" + key), size, dpr)
+    if pm is not None and not lit:
+        img = pm.toImage().convertToFormat(QImage.Format_ARGB32)
+        for y in range(img.height()):
+            for x in range(img.width()):
+                c = img.pixelColor(x, y)
+                if not c.alpha():
+                    continue
+                g = round(0.2126 * c.red() + 0.7152 * c.green()
+                          + 0.0722 * c.blue())
+                img.setPixelColor(x, y, QColor(g, g, g, c.alpha()))
+        pm = QPixmap.fromImage(img)
+        pm.setDevicePixelRatio(dpr)
+    _TAB_CACHE[ck] = pm
     return pm
 
 
@@ -728,7 +760,7 @@ class Overlay(QWidget):
         self._row_rects = []
         snap_ = self.snapshot
 
-        self._paint_head(p, w, snap_)
+        self._paint_head(p, w, snap_, dpr)
         if self.ACT_H:
             self._paint_actions(p, w, snap_)
         if self.STATS_H:
@@ -797,7 +829,8 @@ class Overlay(QWidget):
 
     # -- шапка --------------------------------------------------------------
 
-    def _paint_head(self, p: QPainter, w: int, snap_: dict) -> None:
+    def _paint_head(self, p: QPainter, w: int, snap_: dict,
+                    dpr: float = 1.0) -> None:
         chrome_h = self.HEAD_H + self.ACT_H
         p.fillRect(QRect(0, 0, w, chrome_h), self._bg(L2, chrome=True))
         # Фактура шапки: растягиваем, а не повторяем. Замер по картинке —
@@ -835,10 +868,19 @@ class Overlay(QWidget):
             self._plate(p, rect, active=active, hot=hot)
             ink = INK if active else (INK2 if hot else INK3)
             gi = QRect(rect.x() + 7, rect.y(), icon_w, rect.height())
-            # Масштаб берётся от TAB_ICON, а не от rect: прямоугольник
-            # вкладки выше значка, а размер значков настраивается.
-            self._shape(p, TAB_GLYPH[key], gi, GOLD if active else ink,
-                        self.TAB_ICON / 19.0)
+            pm = tab_icon(key, icon_w, dpr, active)
+            if pm is not None:
+                # Наведение приподнимает погасший значок, но не до полного
+                # цвета: цвет остаётся признаком выбранной вкладки.
+                p.setOpacity(1.0 if active else (0.9 if hot else 0.66))
+                p.drawPixmap(gi.x(), gi.y() + (gi.height() - icon_w) // 2, pm)
+                p.setOpacity(1.0)
+            else:
+                # Пака нет — рисуем вектором. Масштаб от TAB_ICON, а не от
+                # rect: прямоугольник вкладки выше значка, а размер значков
+                # настраивается.
+                self._shape(p, TAB_GLYPH[key], gi, GOLD if active else ink,
+                            self.TAB_ICON / 19.0)
             if show_text:
                 self._txt(p, gi.right() + gaps, base, label, ink, self.f_tab)
             x += bw + 4
