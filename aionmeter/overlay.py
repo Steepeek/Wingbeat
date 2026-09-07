@@ -35,10 +35,11 @@
 from __future__ import annotations
 
 import ctypes
+import math
 from ctypes import wintypes
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication,
                            QIcon, QLinearGradient, QPainter, QPainterPath, QPen,
                            QPixmap, QPolygon)
@@ -56,7 +57,8 @@ from .aggregate import UNATTRIBUTED, UNKNOWN_HEALER
 #: хил, у которого клиент не назвал лекаря.
 NO_OWNER = (UNATTRIBUTED, UNKNOWN_HEALER)
 from .theme import (ACCENT, ALPHA_GLASS, ALPHA_GLASS_CHROME, DANGER, EDGE_DARK,
-                    EDGE_LIT, GAP, GROUP, HAIR, HOVER, INK, INK2, INK3, INK_MUTE,
+                    EDGE_LIT, GAP, GOLD, GOLD_DIM, GROUP, HAIR, HOVER, INK,
+                    INK2, INK3, INK_MUTE,
                     L0, L1, L2, LIVE, PAD, PRESS, R_BUTTON, R_CHIP, R_WINDOW,
                     RULE, SHADOW, SORTBG, TRACK, class_triple, fmt_chat, fmt_ui,
                     snap)
@@ -75,8 +77,12 @@ METRIC_TABS = (("damage", "Damage"), ("heal", "Healing"), ("taken", "Taken"),
 
 #: Значок для каждой вкладки. Рисуются примитивами: подходящих символов нет
 #: ни в одном системном шрифте, а тащить ради четырёх картинок шрифт иконок
-#: в сборку дороже, чем два десятка строк QPainter.
-TAB_GLYPH = {"damage": "sword", "heal": "flask", "taken": "shield", "loot": "pouch"}
+#: в сборку дороже, чем два десятка строк QPainter. Вектор тут ещё и
+#: единственный вариант по существу: размер значков настраивается, окно
+#: живёт при DPR 1 и 2, а готовые картинки интерфейса в клиенте лежат по
+#: 20-24 px и на кнопке в 48 px расплываются.
+TAB_GLYPH = {"damage": "sword", "heal": "cross", "taken": "shield",
+             "loot": "chest"}
 
 #: Крупные кнопки действий. Порядок слева направо — по частоте нажатий.
 ACTIONS = (("play", "Start / pause"), ("clear", "Reset"),
@@ -829,7 +835,10 @@ class Overlay(QWidget):
             self._plate(p, rect, active=active, hot=hot)
             ink = INK if active else (INK2 if hot else INK3)
             gi = QRect(rect.x() + 7, rect.y(), icon_w, rect.height())
-            self._glyph(p, TAB_GLYPH[key], gi, ink, self.TAB_ICON / 17)
+            # Масштаб берётся от TAB_ICON, а не от rect: прямоугольник
+            # вкладки выше значка, а размер значков настраивается.
+            self._shape(p, TAB_GLYPH[key], gi, GOLD if active else ink,
+                        self.TAB_ICON / 19.0)
             if show_text:
                 self._txt(p, gi.right() + gaps, base, label, ink, self.f_tab)
             x += bw + 4
@@ -924,14 +933,15 @@ class Overlay(QWidget):
             paused = bool(snap_.get("paused"))
             self._texture(p, rect, hot=hot,
                           lit=(name == "play" and paused))
-            colour = INK if hot else INK2
-            if name == "play" and paused:
-                colour = ACCENT
+            # Пауза — единственное состояние, у которого свой цвет: акцент
+            # говорит «нажми, чтобы начать», и в общем золоте он бы пропал.
+            colour = ACCENT if (name == "play" and paused) else (
+                GOLD if hot else GOLD_DIM)
             glyph = QRect(rect.x(), rect.y(), rect.width(), rect.height())
             if name in ("settings", "shot"):
-                self._glyph(p, name, glyph, colour, size / 26)
+                self._shape(p, name, glyph, colour, size / 27.5)
             else:
-                self._big_action(p, name, glyph, colour, paused, size / 26)
+                self._big_action(p, name, glyph, colour, paused, size / 27.5)
             x += size + gap
         self._paint_wings(p, w)
         p.fillRect(QRectF(0, self.HEAD_H + self.ACT_H - 1, w, 1), RULE)
@@ -1002,39 +1012,171 @@ class Overlay(QWidget):
         p.setPen(QPen(QColor(255, 255, 255, 34 if hot else 20), 1))
         p.drawLine(rect.x() + 5, rect.y() + 1, rect.right() - 5, rect.y() + 1)
 
-    def _big_action(self, p: QPainter, name: str, rect: QRect, colour: QColor,
-                    paused: bool, k: float) -> None:
-        """Пауза, сброс и копирование — крупным вектором."""
+    def _shape(self, p: QPainter, name: str, rect: QRect, colour: QColor,
+               k: float) -> None:
+        """Одна фигура набора. Все они заданы в клетке ±10, k — её масштаб.
+
+        Масштаб приходит снаружи, а не считается из rect: у вкладки
+        прямоугольник выше значка, а размер значков настраивается в
+        настройках. Заливка — вертикальный градиент: ровное пятно на
+        тёмном фоне выглядит наклейкой, а перепад читается как металл, из
+        которого сделана рамка вокруг.
+        """
         cx, cy = rect.center().x(), rect.center().y()
-        pen = QPen(colour, max(1.6, 2.0 * k))
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
 
         def pt(dx, dy):
             return QPoint(int(round(cx + dx * k)), int(round(cy + dy * k)))
 
-        if name == "play":
-            p.setBrush(colour)
-            p.setPen(Qt.NoPen)
-            if paused:
-                p.drawPolygon(QPolygon([pt(-5, -9), pt(9, 0), pt(-5, 9)]))
-            else:
-                p.drawRoundedRect(QRect(pt(-7, -8), pt(-2, 8)).normalized(),
-                                  1.5 * k, 1.5 * k)
-                p.drawRoundedRect(QRect(pt(2, -8), pt(7, 8)).normalized(),
-                                  1.5 * k, 1.5 * k)
+        def pf(dx, dy):
+            return QPointF(cx + dx * k, cy + dy * k)
+
+        def rf(x0, y0, x1, y1):
+            return QRectF(pf(x0, y0), pf(x1, y1))
+
+        def body():
+            # Градиент растягивается на КЛЕТКУ значка, а не на rect: у
+            # вкладки прямоугольник почти по размеру фигуры, у кнопки в
+            # полтора раза больше, и от общего rect перепад на вкладке
+            # выходил заметно круче, чем на кнопке рядом.
+            g = QLinearGradient(0, cy - 10 * k, 0, cy + 10 * k)
+            g.setColorAt(0.0, QColor(colour).lighter(124))
+            g.setColorAt(1.0, QColor(colour).darker(134))
+            return g
+
+        dark = QColor(6, 8, 12, 200)
+        p.setPen(Qt.NoPen)
+        p.setBrush(body())
+
+        if name == "sword":
+            # Наклон 22°, а не 45°: под 45° клинок с гардой читается как «X».
+            p.save()
+            p.translate(cx, cy)
+            p.rotate(22)
+            p.translate(-cx, -cy)
+            p.drawPolygon(QPolygon([pt(0, -10.4), pt(2.9, -7.0), pt(2.9, 2.2),
+                                    pt(-2.9, 2.2), pt(-2.9, -7.0)]))
+            p.drawRoundedRect(rf(-8.6, 2.2, 8.6, 4.8), 1.1 * k, 1.1 * k)
+            p.drawRect(rf(-1.7, 4.8, 1.7, 8.0))
+            p.drawEllipse(rf(-2.8, 7.6, 2.8, 10.6))
+            p.setBrush(QColor(255, 255, 255, 95))      # блик по грани клинка
+            p.drawRect(rf(-0.8, -8.0, 0.5, 1.4))
+            p.restore()
+        elif name == "cross":
+            # Крест с расширяющимися концами: прямой медицинский выглядит
+            # аптечным, расширенный читается как знак жизни в жанре.
+            arm, w0, w1 = 9.8, 2.5, 4.6
+            pts = [(-w1, -arm), (w1, -arm), (w0, -w0), (arm, -w1), (arm, w1),
+                   (w0, w0), (w1, arm), (-w1, arm), (-w0, w0), (-arm, w1),
+                   (-arm, -w1), (-w0, -w0)]
+            path = QPainterPath()
+            path.moveTo(pf(*pts[0]))
+            for q in pts[1:]:
+                path.lineTo(pf(*q))
+            path.closeSubpath()
+            p.drawPath(path)
+            p.setBrush(QColor(255, 255, 255, 75))
+            p.drawRect(rf(-1.1, -8.4, 0.6, -2.4))
+        elif name == "shield":
+            # Каплевидный щит с умбоном. Вертикальной прорези нет: она
+            # читалась как буква «I».
+            path = QPainterPath()
+            path.moveTo(pf(0, -9.6))
+            path.lineTo(pf(8.4, -6.4))
+            path.cubicTo(pf(8.4, 2.4), pf(5.2, 7.0), pf(0, 10.0))
+            path.cubicTo(pf(-5.2, 7.0), pf(-8.4, 2.4), pf(-8.4, -6.4))
+            path.closeSubpath()
+            p.drawPath(path)
+            p.setBrush(dark)
+            p.drawEllipse(rf(-2.7, -3.6, 2.7, 1.8))
+        elif name == "chest":
+            # Сундук с плоской крышкой. Полукруглая читалась как почтовый
+            # ящик, а вертикальные оковки на 27 px дробили силуэт до фонаря.
+            p.drawRoundedRect(rf(-9.4, -0.8, 9.4, 8.4), 1.2 * k, 1.2 * k)
+            path = QPainterPath()
+            path.moveTo(pf(-9.4, -0.4))
+            path.arcTo(rf(-9.4, -6.0, 9.4, 5.2), 180, -180)
+            path.closeSubpath()
+            p.drawPath(path)
+            p.setBrush(dark)
+            p.drawRect(rf(-9.4, -1.3, 9.4, 0.3))
+            p.setBrush(body())
+            p.drawRoundedRect(rf(-2.6, -2.6, 2.6, 3.4), 0.8 * k, 0.8 * k)
+            p.setBrush(dark)
+            p.drawEllipse(rf(-1.1, -1.0, 1.1, 1.2))
+        elif name == "play":
+            path = QPainterPath()
+            path.moveTo(pf(-6.6, -10.2))
+            path.lineTo(pf(10.0, 0))
+            path.lineTo(pf(-6.6, 10.2))
+            path.closeSubpath()
+            p.drawPath(path)
+        elif name == "pause":
+            p.drawRoundedRect(rf(-7.6, -9.2, -2.4, 9.2), 1.4 * k, 1.4 * k)
+            p.drawRoundedRect(rf(2.4, -9.2, 7.6, 9.2), 1.4 * k, 1.4 * k)
         elif name == "clear":
-            # круговая стрелка: «начать заново»
-            p.drawArc(QRect(pt(-8, -8), pt(8, 8)).normalized(), 40 * 16, 280 * 16)
-            p.drawLine(pt(6.1, -9.4), pt(6.1, -3.6))
-            p.drawLine(pt(6.1, -9.4), pt(10.6, -7.6))
-        elif name == "copy":
-            p.drawRoundedRect(QRect(pt(-8, -8), pt(2, 3)).normalized(),
-                              1.6 * k, 1.6 * k)
-            p.drawRoundedRect(QRect(pt(-2, -3), pt(8, 8)).normalized(),
-                              1.6 * k, 1.6 * k)
+            # Кольцо на 288° сплошной толщины плюс настоящий треугольный
+            # наконечник. Дуга на 280° с двумя чёрточками читалась как «C».
+            r, th, gap = 7.7, 3.3, 118.0
+            outer = rf(-r - th / 2, -r - th / 2, r + th / 2, r + th / 2)
+            inner = rf(-r + th / 2, -r + th / 2, r - th / 2, r - th / 2)
+            path = QPainterPath()
+            path.arcMoveTo(outer, gap)
+            path.arcTo(outer, gap, -288)
+            path.arcTo(inner, gap - 288, 288)
+            path.closeSubpath()
+            p.drawPath(path)
+            a = math.radians(gap)
+            hx, hy = math.cos(a) * r, -math.sin(a) * r
+            p.drawPolygon(QPolygon([pt(hx - 4.0, hy - 1.4),
+                                    pt(hx + 4.0, hy - 1.4),
+                                    pt(hx, hy + 5.0)]))
+        elif name == "chat":
+            # Не «две карточки», а речевое облако: кнопка копирует сводку
+            # В ИГРОВОЙ ЧАТ, и облако говорит об этом прямо.
+            p.drawRoundedRect(rf(-9.6, -8.4, 9.6, 4.6), 2.4 * k, 2.4 * k)
+            p.drawPolygon(QPolygon([pt(-5.6, 3.4), pt(-1.0, 3.4),
+                                    pt(-6.2, 9.6)]))
+            p.setBrush(dark)
+            for i, wd in enumerate((6.4, 4.4)):
+                p.drawRoundedRect(rf(-wd, -5.4 + i * 3.5, wd, -3.7 + i * 3.5),
+                                  0.7 * k, 0.7 * k)
+        elif name == "shot":
+            p.drawRoundedRect(rf(-4.6, -9.0, 1.0, -6.8), 0.9 * k, 0.9 * k)
+            p.drawRoundedRect(rf(-9.4, -6.9, 9.4, 8.0), 2.0 * k, 2.0 * k)
+            p.setBrush(dark)
+            p.drawEllipse(rf(-5.2, -3.9, 5.2, 6.5))
+            p.setBrush(body())
+            p.drawEllipse(rf(-2.9, -1.6, 2.9, 4.2))
+            p.setBrush(QColor(255, 255, 255, 130))
+            p.drawEllipse(rf(-2.1, -1.0, -0.5, 0.6))
+        elif name == "settings":
+            # Шесть ПРЯМОУГОЛЬНЫХ зубцов вместо восьми острых: прежняя
+            # фигура с радиусами 8.6/6.2 давала мелкую насечку и читалась
+            # как солнце, а не как шестерня.
+            teeth, ro, ri, half = 6, 10.0, 6.4, 0.34
+            step = 2 * math.pi / teeth
+            path = QPainterPath()
+            for i in range(teeth):
+                a0 = step * i
+                for j, (da, r) in enumerate(((-half, ri), (-half, ro),
+                                             (half, ro), (half, ri))):
+                    q = pf(math.cos(a0 + da) * r, math.sin(a0 + da) * r)
+                    path.moveTo(q) if (i == 0 and j == 0) else path.lineTo(q)
+                path.arcTo(rf(-ri, -ri, ri, ri),
+                           -math.degrees(a0 + half),
+                           -math.degrees(step - 2 * half))
+            path.closeSubpath()
+            p.drawPath(path)
+            p.setBrush(dark)
+            p.drawEllipse(rf(-3.5, -3.5, 3.5, 3.5))
+        p.setBrush(Qt.NoBrush)
+
+    def _big_action(self, p: QPainter, name: str, rect: QRect, colour: QColor,
+                    paused: bool, k: float) -> None:
+        """Пуск-пауза, сброс и копирование в чат — крупным вектором."""
+        shape = {"play": "play" if paused else "pause", "copy": "chat"}.get(
+            name, name)
+        self._shape(p, shape, rect, colour, k)
 
     def _button(self, p: QPainter, rect: QRect, name: str, snap_: dict) -> None:
         self._hit.append((f"btn:{name}", rect))
@@ -1047,132 +1189,22 @@ class Overlay(QWidget):
         colour = INK if hot else INK3
         if name == "close" and hot:
             colour = DANGER
-        if name == "play":
-            colour = INK if not snap_.get("paused") else ACCENT
         self._icon(p, name, rect, colour, bool(snap_.get("paused")))
-
-    def _glyph(self, p: QPainter, name: str, rect: QRect, colour: QColor,
-               scale: float = 1.0) -> None:
-        """Тематические значки жанра, рисуются вектором от центра rect.
-
-        Масштаб задаётся отдельно от размера кнопки, чтобы одна и та же
-        фигура читалась и в маленькой вкладке, и на крупной кнопке.
-        """
-        cx, cy = rect.center().x(), rect.center().y()
-        k = scale
-        pen = QPen(colour, max(1.2, 1.5 * k))
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-
-        def pt(dx, dy):
-            return QPoint(int(round(cx + dx * k)), int(round(cy + dy * k)))
-
-        # Фигуры намеренно СИЛУЭТНЫЕ и залитые: контурная графика на 17
-        # пикселях сливается в кашу, а сплошное пятно узнаётся с одного
-        # взгляда — а именно это и нужно от вкладки.
-        if name == "sword":
-            # Меч ДИАГОНАЛЬНЫЙ: вертикальный клинок с гардой на 19 пикселях
-            # читается как плюс или якорь, а наклонный силуэт узнаётся сразу.
-            p.save()
-            p.translate(cx, cy)
-            p.rotate(-45)
-            p.translate(-cx, -cy)
-            p.setBrush(colour)
-            p.setPen(Qt.NoPen)
-            p.drawPolygon(QPolygon([pt(0, -9), pt(2.1, -6), pt(2.1, 2.6),
-                                    pt(-2.1, 2.6), pt(-2.1, -6)]))
-            p.drawRoundedRect(QRect(pt(-6.2, 2.6), pt(6.2, 4.6)).normalized(),
-                              1 * k, 1 * k)
-            p.drawRect(QRect(pt(-1.2, 4.6), pt(1.2, 8)).normalized())
-            p.restore()
-        elif name == "flask":
-            # склянка зелья: пробка, коническая колба, светлый крест внутри
-            p.setBrush(colour)
-            p.setPen(Qt.NoPen)
-            p.drawRoundedRect(QRect(pt(-2.2, -9), pt(2.2, -6.4)).normalized(),
-                              0.8 * k, 0.8 * k)
-            p.drawPolygon(QPolygon([pt(-1.5, -6.4), pt(1.5, -6.4), pt(1.5, -3),
-                                    pt(5.6, 4.6), pt(4, 8.4), pt(-4, 8.4),
-                                    pt(-5.6, 4.6), pt(-1.5, -3)]))
-            p.setBrush(self._bg(L2, chrome=True))
-            p.drawRect(QRect(pt(-0.9, 2.4), pt(0.9, 6.6)).normalized())
-            p.drawRect(QRect(pt(-2.8, 4.1), pt(2.8, 4.9)).normalized())
-        elif name == "shield":
-            p.setBrush(colour)
-            p.setPen(Qt.NoPen)
-            p.drawPolygon(QPolygon([pt(0, -8.4), pt(6.6, -5.6), pt(6.6, 1),
-                                    pt(0, 8.6), pt(-6.6, 1), pt(-6.6, -5.6)]))
-            p.setBrush(self._bg(L2, chrome=True))
-            p.drawRect(QRect(pt(-0.9, -4.6), pt(0.9, 4.4)).normalized())
-        elif name == "pouch":
-            # мешок с завязкой: горловина уже тулова, снизу шире
-            p.setBrush(colour)
-            p.setPen(Qt.NoPen)
-            p.drawPolygon(QPolygon([pt(-3.2, -3.2), pt(3.2, -3.2), pt(8.2, 2.4),
-                                    pt(7.4, 6.4), pt(3.4, 8.8), pt(-3.4, 8.8),
-                                    pt(-7.4, 6.4), pt(-8.2, 2.4)]))
-            p.drawRoundedRect(QRect(pt(-3.6, -6.6), pt(3.6, -4.4)).normalized(),
-                              0.9 * k, 0.9 * k)
-            p.drawLine(pt(-2.4, -8.8), pt(-1.4, -6.6))
-            p.drawLine(pt(2.4, -8.8), pt(1.4, -6.6))
-            p.setBrush(self._bg(L2, chrome=True))
-            p.drawEllipse(QRect(pt(-1.9, 2.2), pt(1.9, 6)).normalized())
-        elif name == "shot":
-            # Фотоаппарат: корпус, видоискатель, объектив
-            p.setBrush(colour)
-            p.setPen(Qt.NoPen)
-            p.drawRoundedRect(QRect(pt(-4.4, -8), pt(1.6, -5.6)).normalized(),
-                              0.8 * k, 0.8 * k)
-            p.drawRoundedRect(QRect(pt(-9, -5.6), pt(9, 8)).normalized(),
-                              1.8 * k, 1.8 * k)
-            p.setBrush(self._bg(L2, chrome=True))
-            p.drawEllipse(QRect(pt(-4.2, -2.8), pt(4.2, 5.4)).normalized())
-            p.setBrush(colour)
-            p.drawEllipse(QRect(pt(-1.8, -0.4), pt(1.8, 3)).normalized())
-        elif name == "settings":
-            # шестерня: залитый венец с зубцами-трапециями и отверстие
-            import math
-            p.setBrush(colour)
-            p.setPen(Qt.NoPen)
-            teeth = 8
-            poly = []
-            for i in range(teeth * 2):
-                a = math.pi * i / teeth - math.pi / 2
-                r = 8.6 if i % 2 == 0 else 6.2
-                # чуть сужаем вершины зубцов, иначе получается солнце
-                poly.append(pt(math.cos(a) * r, math.sin(a) * r))
-            p.drawPolygon(QPolygon(poly))
-            p.setBrush(self._bg(L2, chrome=True))
-            p.drawEllipse(QRect(pt(-3, -3), pt(3, 3)).normalized())
 
     def _icon(self, p: QPainter, name: str, rect: QRect, colour: QColor,
               paused: bool = False) -> None:
-        """Значки — примитивами: символы вроде ⚙ есть не во всех шрифтах."""
-        if name in ("sword", "flask", "shield", "pouch", "settings", "shot"):
-            self._glyph(p, name, rect, colour)
+        """Значки окна — примитивами: символов вроде ⚙ нет во многих шрифтах."""
+        if name in TAB_GLYPH.values() or name in ("settings", "shot", "clear"):
+            self._shape(p, name, rect, colour, rect.height() / 24.0)
+            return
+        if name in ("play", "copy"):
+            self._big_action(p, name, rect, colour, paused,
+                             rect.height() / 24.0)
             return
         cx, cy = rect.center().x() + 1, rect.center().y() + 1
         p.setPen(QPen(colour, 1.5))
         p.setBrush(Qt.NoBrush)
-        if name == "play":
-            p.setBrush(colour)
-            p.setPen(Qt.NoPen)
-            if paused:
-                p.drawPolygon(QPolygon([QPoint(cx - 3, cy - 6), QPoint(cx + 6, cy),
-                                        QPoint(cx - 3, cy + 6)]))
-            else:
-                p.drawRect(QRect(cx - 5, cy - 5, 4, 11))
-                p.drawRect(QRect(cx + 1, cy - 5, 4, 11))
-        elif name == "clear":
-            p.drawArc(QRect(cx - 6, cy - 6, 12, 12), 50 * 16, 280 * 16)
-            p.drawLine(cx + 5, cy - 7, cx + 5, cy - 2)
-            p.drawLine(cx + 5, cy - 7, cx + 9, cy - 6)
-        elif name == "copy":
-            p.drawRect(QRect(cx - 6, cy - 6, 8, 8))
-            p.drawRect(QRect(cx - 2, cy - 2, 8, 8))
-        elif name == "menu":
+        if name == "menu":
             for dy in (-4, 0, 4):
                 p.drawLine(cx - 6, cy + dy, cx + 6, cy + dy)
         elif name == "close":
