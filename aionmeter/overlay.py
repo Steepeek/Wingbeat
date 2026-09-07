@@ -49,7 +49,12 @@ from . import config as cfgmod
 from . import hotkeys as hk
 from . import itemdb
 from . import skilldb
-from .aggregate import UNATTRIBUTED
+from .aggregate import UNATTRIBUTED, UNKNOWN_HEALER
+
+#: Строки, у которых нет игрока-владельца: рисуются приглушённо и
+#: последними, в чат не копируются. Периодический урон без автора и
+#: хил, у которого клиент не назвал лекаря.
+NO_OWNER = (UNATTRIBUTED, UNKNOWN_HEALER)
 from .theme import (ACCENT, ALPHA_GLASS, ALPHA_GLASS_CHROME, DANGER, EDGE_DARK,
                     EDGE_LIT, GAP, GROUP, HAIR, HOVER, INK, INK2, INK3, INK_MUTE,
                     L0, L1, L2, LIVE, PAD, PRESS, R_BUTTON, R_CHIP, R_WINDOW,
@@ -90,6 +95,10 @@ CAPTIONS = {
 }
 #: На вкладке добычи нет ни DPS, ни критов — там считают предметы.
 LOOT_COLUMNS = ("dmg", "pct", "hits")
+#: Полоска сводки: значок, подпись, ключ в счётчике добычи. Порядок сверху вниз.
+STATS_ROWS = (("exp", "опыт", "exp"), ("kinah", "кинара", "kinah_in"),
+              ("ap", "АП", "ap"), ("kills", "убито", "kills"))
+
 #: Подпись строки автоатаки. Вынесена в константу: по ней же ищется иконка.
 AUTOATTACK = "автоатака"
 COL_ORDER = ("dmg", "dps", "pct", "hits", "crit")
@@ -305,7 +314,7 @@ class Overlay(QWidget):
         self.LOOT_H = self.ICON + 8
         self.SKILL_H = self.LOOT_H
         self.STATS_ICON = self.ICON
-        self.STATS_H = ((self.ICON + 8) * 2
+        self.STATS_H = ((self.ICON + 6) * len(STATS_ROWS)
                         if self.cfg.get("show_stats_strip", True) else 0)
         # Строка игрока обязана вмещать эмблему класса, иначе та обрежется.
         self.ROW_H = max(self.H + 8, self.ICON + 6)
@@ -530,7 +539,7 @@ class Overlay(QWidget):
         """
         snap = self.snapshot
         metric = snap.get("metric", "damage")
-        rows = [r for r in snap.get("rows", ()) if r["name"] != UNATTRIBUTED]
+        rows = [r for r in snap.get("rows", ()) if r["name"] not in NO_OWNER]
         if not rows:
             return ""
 
@@ -654,8 +663,8 @@ class Overlay(QWidget):
 
         top = self.HEAD_H + self.ACT_H + self.STATS_H + self.COL_H + 1
         bottom = h - self.foot_h - 1
-        rows = [r for r in snap_.get("rows", ()) if r["name"] != UNATTRIBUTED]
-        dot = next((r for r in snap_.get("rows", ()) if r["name"] == UNATTRIBUTED), None)
+        rows = [r for r in snap_.get("rows", ()) if r["name"] not in NO_OWNER]
+        dot = next((r for r in snap_.get("rows", ()) if r["name"] in NO_OWNER), None)
 
         if not rows and dot is None:
             self._paint_empty(p, w, top, bottom, snap_)
@@ -1046,11 +1055,10 @@ class Overlay(QWidget):
         top = self.HEAD_H + self.ACT_H
         p.fillRect(QRect(0, top, w, self.STATS_H), self._bg(L2, chrome=True))
         loot = snap_.get("loot", {})
-        rows = (("exp", "опыт", loot.get("exp", 0)),
-                ("kinah", "кинара", loot.get("kinah_in", 0)))
+        rows = tuple((key, label, loot.get(src, 0)) for key, label, src in STATS_ROWS)
         fm = QFontMetrics(self.f_stat)
         icon = self.STATS_ICON
-        row_h = self.STATS_H // 2
+        row_h = self.STATS_H // len(STATS_ROWS)
         for i, (key, label, value) in enumerate(rows):
             y = top + i * row_h
             base = y + (row_h + fm.ascent() - fm.descent()) // 2
@@ -1342,7 +1350,8 @@ class Overlay(QWidget):
         # просто дублировались. Здесь остаётся то, чему наверху места нет.
         pairs = (("exp", "опыт"), ("ap", "AP"), ("kinah", "кинара"))
         if self.STATS_H:
-            pairs = (("ap", "AP"), ("kills", "убито"), ("deaths", "смертей"))
+            # Всё, что уехало в полоску, здесь дублировать незачем.
+            pairs = (("deaths", "смертей"), ("pvp_kills", "PvP"))
         for key, label in pairs:
             value = loot.get("kinah_in" if key == "kinah" else key)
             if value:

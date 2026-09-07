@@ -401,6 +401,76 @@ check("одиночная запись по нику склеена со сво�
       [(r["name"], r["total"]) for r in m21.snapshot(DAMAGE)["rows"]], [("You", 300)])
 
 
+print("хил: кому он на самом деле принадлежит")
+
+from aionmeter.aggregate import HEAL, UNKNOWN_HEALER
+
+def _heal_meter(self_class="RA", skills=None):
+    # Класс задаём ДО создания: Meter засевает им голоса в __init__, иначе
+    # правило разбора хила считает свой класс неизвестным.
+    cfg = dict(DEFAULTS)
+    cfg["scope"] = "all"
+    cfg["self_class"] = self_class
+    m = Meter(cfg)
+    m.skill_class = dict(skills or {})
+    return m
+
+def _heal_rows(m):
+    return {r["name"]: r["total"] for r in m.snapshot(HEAL)["rows"]}
+
+# «You restored N of X's HP by using S» — этой одной фразе в клиенте отвечают
+# и мой хил, и чужой хот, и чужой вампиризм. Разбираем по классу скилла.
+m40 = _heal_meter(skills={"Word of Revival V": "CH"})
+m40.feed(parse("2026.09.07 12:00:00",
+               "You restored 500 of Kimiko's HP by using Word of Revival V."))
+check("хилка чужого класса не приписывается игроку",
+      _heal_rows(m40), {UNKNOWN_HEALER: 500})
+
+# Свой класс — свой хил.
+m41 = _heal_meter(self_class="PR", skills={"Light of Rejuvenation V": "PR"})
+m41.feed(parse("2026.09.07 12:00:00",
+               "You restored 500 of Kimiko's HP by using Light of Rejuvenation V."))
+check("хилка своего класса остаётся за игроком", _heal_rows(m41), {"You": 500})
+
+# Вампиризм: названный сам бьёт этим же скиллом — лечит себя.
+m42 = _heal_meter(skills={"Exhausting Wave I": "FI"})
+m42.feed(parse("2026.09.07 12:00:00",
+               "Lamenace inflicted 794 damage on Mob by using Exhausting Wave I."))
+m42.feed(parse("2026.09.07 12:00:00",
+               "You restored 300 of Lamenace's HP by using Exhausting Wave I."))
+check("вампиризм записан тому, кто бьёт", _heal_rows(m42).get("Lamenace"), 300)
+
+# Зелье класса не имеет: пьёт его тот, кто назван.
+m43 = _heal_meter()
+m43.feed(parse("2026.09.07 12:00:00",
+               "You restored 200 of Miixd's HP by using Major Recovery Potion."))
+check("зелье засчитано тому, кто его выпил", _heal_rows(m43), {"Miixd": 200})
+
+# «You recovered N HP by using S» — это шаблон HEAL_TO_ME: вылечили МЕНЯ.
+m44 = _heal_meter(skills={"Word of Revival V": "CH"})
+m44.feed(parse("2026.09.07 12:00:00", "You recovered 400 HP by using Word of Revival V."))
+check("«меня вылечили» не считается моим хилом",
+      _heal_rows(m44), {UNKNOWN_HEALER: 400})
+
+# Свой самохил остаётся своим.
+m45 = _heal_meter(skills={"Seizure Arrow II": "RA"})
+m45.feed(parse("2026.09.07 12:00:00", "You recovered 400 HP by using Seizure Arrow II."))
+check("свой самохил остаётся за игроком", _heal_rows(m45), {"You": 400})
+
+# Форма с явным автором сомнений не вызывает и правилом не трогается.
+m46 = _heal_meter(skills={"Healing Wind IV": "CH"})
+m46.feed(parse("2026.09.07 12:00:00",
+               "Lisa recovered 2" + NBSP + "883 HP because Athen used Healing Wind IV."))
+check("явный автор берётся как есть", _heal_rows(m46), {"Athen": 2883})
+
+# Класс ещё не известен — отбирать хил у игрока нельзя.
+m47 = _heal_meter(self_class="", skills={"Word of Revival V": "CH"})
+m47.feed(parse("2026.09.07 12:00:00",
+               "You restored 500 of Kimiko's HP by using Word of Revival V."))
+check("при неизвестном своём классе хил остаётся за игроком",
+      _heal_rows(m47), {"You": 500})
+
+
 print("добыча: только выпавшее в бою")
 
 # Клиент пишет одну строку и на дроп, и на взятое со склада: STR_MSG_GET_ITEM.

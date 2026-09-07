@@ -81,6 +81,18 @@ RE_RECV = re.compile(
 )
 
 # "You restored 102 of Weisti's HP by using Light of Rejuvenation V."
+#
+# ЛОВУШКА. Этой одной фразе в клиенте соответствуют ДВА разных семейства
+# шаблонов, и текст у них совпадает до символа:
+#     STR_SKILL_SUCC_Heal_Instant_HEAL_ME_TO_B   — лечу я
+#     STR_SKILL_SUCC_Heal_INTERVAL_HEAL_TO_B     — тик чужого хота
+#     STR_SKILL_SUCC_SkillATKDrain_..._HEAL_TO_B — чужой вампиризм
+# Во втором и третьем случае «You» — не игрок: слота для автора в шаблоне
+# нет вовсе. Доказано на живом логе:
+#     You restored ... of Lamenace's HP by using Exhausting Wave I.
+#     Lamenace inflicted 794 damage on Stallari by using Exhausting Wave I.
+# то есть лечил себя Lamenace, а строка написана от «You». Поэтому такие
+# события помечаются unsure, а автора разбирает агрегатор по классу скилла.
 RE_HEAL_RESTORE = re.compile(
     r"^(?P<actor>" + NAME + r") restored (?P<amount>" + NUM + r") "
     r"of (?P<target>.+?)'s (?P<res>HP|MP)"
@@ -203,6 +215,8 @@ class Event:
     skill: str = ""    # "" => автоатака (для kind == "damage")
     crit: bool = False
     incoming: bool = False   # урон получен, а не нанесён
+    #: Автор события в строке НЕ указан однозначно — см. RE_HEAL_RESTORE.
+    unsure: bool = False
     extra: str = ""          # эффект / ресурс / подтип
 
 
@@ -307,11 +321,21 @@ def parse(ts: str, body: str) -> Event | None:
             if healer and healer.lower() == "you":
                 healer = SELF
             target = g.get("target") or g.get("actor") or ""
+            # Две формы не называют автора, и обе от лица «You»:
+            #   «You restored N of X's HP by using S» — Heal_*_HEAL_TO_B,
+            #      мой хил и чужой хот/вампиризм пишутся одинаково;
+            #   «You recovered N HP by using S» — Heal_*_HEAL_TO_ME, где
+            #      TO_ME значит «цель — я». То есть меня ВЫЛЕЧИЛИ, а «by
+            #      using» относится к скиллу лекаря, а не к моему действию.
+            # Остальные формы автора называют прямо и сомнений не вызывают.
+            unsure = healer == SELF and (
+                (rx is RE_HEAL_RESTORE and target != SELF)
+                or rx is RE_HEAL_SELF)
             return Event(
                 "heal", ts_to_epoch(ts),
                 actor=healer or "", target=target,
                 amount=to_int(g.get("amount")), skill=g.get("skill") or "",
-                extra=g.get("res") or "HP",
+                extra=g.get("res") or "HP", unsure=unsure,
             )
 
     m = RE_XP.match(body)

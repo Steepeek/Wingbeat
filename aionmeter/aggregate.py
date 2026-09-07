@@ -26,6 +26,10 @@ DAMAGE, HEAL, TAKEN, LOOT = "damage", "heal", "taken", "loot"
 #: Периодический урон: владельца эффекта в строке лога физически нет.
 UNATTRIBUTED = "(периодический)"
 
+#: Хил, у которого клиент не назвал автора. Отдельной строкой, а не на
+#: игроке: приписывать чужое себе хуже, чем честно сказать «неизвестно».
+UNKNOWN_HEALER = "(лекарь неизвестен)"
+
 def is_player_name(name: str) -> bool:
     """Имя персонажа игрока в Aion — всегда одно слово, без пробелов.
 
@@ -165,6 +169,9 @@ class Meter:
         self.skill_class: dict[str, str] = {}
         #: Голоса за класс по каждому актору: скиллы у классов не пересекаются.
         self.class_votes: dict[str, Counter] = {}
+        #: Скилл -> кто им бил. Нужно, чтобы отличить вампиризм от хила:
+        #: у вампирских скиллов лечится тот же, кто наносит удар.
+        self.skill_users: dict[str, set] = {}
         #: Ник подтверждён однозначной строкой, а не эвристикой.
         self.self_confirmed = bool(cfg.get("self_name"))
         self._own_chat: Counter = Counter()
@@ -173,6 +180,10 @@ class Meter:
         #: первого лица, и по нику. Живёт ровно одну секунду — см. _is_echo.
         self._echo: dict[tuple, str] = {}
         self._echo_ts = 0
+        # Класс из прошлой сессии: снимает холодный старт разбора хила.
+        seed = cfg.get("self_class")
+        if seed:
+            self.class_votes[SELF] = Counter({seed: 1})
 
     # -- служебное --
 
@@ -183,6 +194,7 @@ class Meter:
         self.session = Encounter(0, self.cfg)
         self.loot.clear()
         self.effect_owner.clear()
+        self.skill_users.clear()
         self.items.clear()
         self.rolls.clear()
         self.pending_close = 0
@@ -209,7 +221,16 @@ class Meter:
     def actor_class(self, name: str) -> str:
         """Код класса по использованным скиллам или '' если не определён."""
         votes = self.class_votes.get(name)
-        return votes.most_common(1)[0][0] if votes else ""
+        if not votes:
+            return ""
+        code = votes.most_common(1)[0][0]
+        if name == SELF and code and self.cfg.get("self_class") != code:
+            # Запоминаем свой класс в настройках. Без этого в начале каждой
+            # сессии он неизвестен, и правило разбора хила (см. _heal_owner)
+            # успевает приписать игроку чужие хилы: на живом логе класс
+            # определялся только к 699-му событию.
+            self.cfg["self_class"] = code
+        return code
 
     def set_party(self, name: str, is_party: bool) -> None:
         """Ручное отнесение игрока к группе или к посторонним."""
@@ -273,6 +294,47 @@ class Meter:
             self._echo[key] = ev.actor
             return False
         return seen != ev.actor
+
+    def _heal_owner(self, ev) -> str:
+        """Кому записать хил, когда в строке автор не назван.
+
+        Форма «You restored N of X's HP by using S» в клиенте отвечает сразу
+        трём семействам шаблонов, и текст у них совпадает до символа: мой
+        собственный хил, тик ЧУЖОГО хота и ЧУЖОЙ вампиризм. Слота для автора
+        во втором и третьем нет вовсе — клиент подставляет «You».
+
+        Замер на живом логе рейнджера, который никого не лечил: таких строк
+        4811, при этом строк «X recovered N HP because you used S», то есть
+        заведомо своих, — ноль. Все 4811 приписывались игроку.
+
+        Автора из соседних строк не достать: явная пара нашлась у 4 строк из
+        4811. Поэтому разбираем по данным клиента, сверху вниз:
+        """
+        if not ev.unsure:
+            return self._owner(ev.actor)
+
+        # 1. Вампиризм: названный сам бьёт этим же скиллом, значит лечит себя.
+        #    Проверено на логе — «Lamenace inflicted ... by using Exhausting
+        #    Wave I» в ту же секунду, что и хил «of Lamenace's HP».
+        if ev.target in self.skill_users.get(ev.skill, ()):
+            return self._owner(ev.target)
+
+        code = self.skill_class.get(ev.skill, "")
+        # 2. Скилла нет в таблице классов — это зелье или предмет, а их пьют
+        #    себе. Названный и есть тот, кто вылечился.
+        if not code:
+            return self._owner(ev.target)
+
+        mine = self.actor_class(SELF)
+        # 3. Свой класс ещё не определён (например, хилер вообще не бил) —
+        #    отбирать у него хил нельзя, оставляем как было.
+        if not mine:
+            return self._owner(ev.actor)
+
+        # 4. Скилл чужого класса — точно не мой, но кто именно, лог не говорит.
+        if code != mine:
+            return UNKNOWN_HEALER
+        return self._owner(ev.actor)
 
     def _loot_out_of_combat(self, ts: int) -> bool:
         """Предмет взят вне боя — со склада, из почты, из ремесла?
@@ -406,7 +468,7 @@ class Meter:
         if kind == "heal":
             if not ev.actor or ev.amount <= 0 or ev.extra == "MP":
                 return
-            self._add(HEAL, self._owner(ev.actor), ev.ts, ev.amount, False, ev.skill)
+            self._add(HEAL, self._heal_owner(ev), ev.ts, ev.amount, False, ev.skill)
             return
 
         if kind == "applied":
@@ -479,6 +541,7 @@ class Meter:
         if ev.skill:
             # Запоминаем автора скилла на этой цели: тик дота автора не несёт
             self.effect_owner[(ev.skill, ev.target)] = ev.actor
+            self.skill_users.setdefault(ev.skill, set()).add(ev.actor)
             if self.skill_class:
                 code = self.skill_class.get(ev.skill)
                 if code:
@@ -518,7 +581,9 @@ class Meter:
             return "party"
         if scope == "party":
             return None
-        if name == UNATTRIBUTED:
+        # Служебные строки без владельца отсеиваться как мобы не должны:
+        # в их именах есть пробелы, и правило is_player_name их скрывает.
+        if name in (UNATTRIBUTED, UNKNOWN_HEALER):
             return "other"
         if self.cfg.get("hide_mobs", True):
             if not is_player_name(name) or name in self.mobs or name in self.hostiles:
