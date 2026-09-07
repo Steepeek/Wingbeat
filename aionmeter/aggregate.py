@@ -600,7 +600,12 @@ class Meter:
                     "max": a.max_hit,
                     "is_self": name == SELF or (bool(self.self_name) and name == self.self_name),
                     "is_party": name in self.party,
-                    "skills": a.skills.most_common(8),
+                    # ВСЕ скиллы, а не первые восемь. Обрезка тут была вдвойне
+                    # вредной: мало того что список кончался на восьмом, так
+                    # ещё и весь урон сверх него уезжал в строку «автоатака» —
+                    # она считается как «итог минус перечисленное». На живом
+                    # логе это давало автоатаке 38 % вместо настоящих 8 %.
+                    "skills": a.skills.most_common(),
                 })
 
         split = cfg.get("scope") == "split"
