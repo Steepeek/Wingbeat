@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from aionmeter.aggregate import DAMAGE, Meter
+from aionmeter.aggregate import DAMAGE, UNATTRIBUTED, Meter
 from aionmeter.config import DEFAULTS
 from aionmeter.parser import iter_records, parse, to_int
 from aionmeter.tailer import Tailer
@@ -679,7 +679,7 @@ m22.feed(parse("2026.08.31 19:00:00", "Ann inflicted 500 damage on Mob by using 
 m22.feed(parse("2026.08.31 19:00:02", "Mob received 300 damage due to the effect of Erosion VI."))
 by = {r["display"]: r["total"] for r in m22.snapshot(DAMAGE)["rows"]}
 check("тик дота приписан тому, кто его наложил", by.get("Ann"), 800)
-check("строки «(периодический)» при этом нет", "(периодический)" in by, False)
+check("служебной строки без владельца при этом нет", UNATTRIBUTED in by, False)
 
 # Два сорка одним скиллом: урон уходит последнему наложившему
 m23 = Meter(dict(DEFAULTS)); m23.cfg["scope"] = "all"
@@ -711,7 +711,7 @@ m26 = Meter(dict(DEFAULTS)); m26.cfg["scope"] = "all"
 m26.feed(parse("2026.08.31 19:00:00",
                "Mob received 50 damage due to the effect of Magical Water Damage Effect."))
 check("безымянный прок остаётся отдельной строкой",
-      m26.snapshot(DAMAGE)["rows"][0]["display"], "(периодический)")
+      m26.snapshot(DAMAGE)["rows"][0]["display"], UNATTRIBUTED)
 
 # Лут
 m27 = Meter(dict(DEFAULTS)); m27.cfg["scope"] = "all"
@@ -758,13 +758,13 @@ def _row(name, total, avg, **kw):
 
 _txt = _copy_text([_row("Steepeek", 8_400_000, 1825), _row("Weisti", 5_580_000, 1800)])
 check("вид строки для чата", _txt,
-      "Урон 2:14 | Steepeek 8.40M (1 825 dps) | Weisti 5.58M (1 800 dps)")
+      "Damage 2:14 | Steepeek 8.40M (1 825 dps) | Weisti 5.58M (1 800 dps)")
 check("на вкладке хила подпись hps, а не dps",
       "hps" in _copy_text([_row("Ann", 1000, 50)], metric="heal"), True)
 check("на вкладке добычи пишем штуки и без времени",
-      _copy_text([_row("Ann", 42, 0)], metric="loot"), "Добыча | Ann 42 шт")
-check("периодический урон в чат не идёт",
-      "период" in _copy_text([_row("Ann", 100, 10), _row("(периодический)", 999, 99)]),
+      _copy_text([_row("Ann", 42, 0)], metric="loot"), "Loot | Ann 42 pcs")
+check("строка без владельца в чат не идёт",
+      UNATTRIBUTED in _copy_text([_row("Ann", 100, 10), _row(UNATTRIBUTED, 999, 99)]),
       False)
 check("пустая таблица даёт пустую строку", _copy_text([]), "")
 

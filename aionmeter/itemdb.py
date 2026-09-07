@@ -24,14 +24,16 @@ QUALITY_COLOURS: dict[str, str] = {
     "MYTHIC": "#D2544A",
 }
 
+#: Слова взяты из самого клиента (STR_ITEMQUALITY_*), а не переведены на
+#: слух: игрок видит в игре ровно эти, и расхождение сбивало бы с толку.
 QUALITY_NAMES: dict[str, str] = {
-    "JUNK": "хлам",
-    "COMMON": "обычный",
-    "RARE": "улучшенный",
-    "LEGEND": "героический",
-    "UNIQUE": "мифический",
-    "EPIC": "вечный",
-    "MYTHIC": "древний",
+    "JUNK": "Junk",
+    "COMMON": "Common",
+    "RARE": "Superior",
+    "LEGEND": "Heroic",
+    "UNIQUE": "Fabled",
+    "EPIC": "Eternal",
+    "MYTHIC": "Mythic",
 }
 
 _cache: dict[str, list] | None = None

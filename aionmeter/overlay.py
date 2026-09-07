@@ -70,8 +70,8 @@ WS_EX_NOACTIVATE = 0x08000000
 HWND_TOPMOST = -1
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
 
-METRIC_TABS = (("damage", "Урон"), ("heal", "Хил"), ("taken", "Получено"),
-               ("loot", "Добыча"))
+METRIC_TABS = (("damage", "Damage"), ("heal", "Healing"), ("taken", "Taken"),
+               ("loot", "Loot"))
 
 #: Значок для каждой вкладки. Рисуются примитивами: подходящих символов нет
 #: ни в одном системном шрифте, а тащить ради четырёх картинок шрифт иконок
@@ -79,29 +79,29 @@ METRIC_TABS = (("damage", "Урон"), ("heal", "Хил"), ("taken", "Получ
 TAB_GLYPH = {"damage": "sword", "heal": "flask", "taken": "shield", "loot": "pouch"}
 
 #: Крупные кнопки действий. Порядок слева направо — по частоте нажатий.
-ACTIONS = (("play", "Старт / пауза"), ("clear", "Сбросить"),
-           ("copy", "В игровой чат"), ("shot", "Снимок окна"),
-           ("settings", "Настройки"))
-METRIC_TITLE = {"damage": "Урон", "heal": "Хил", "taken": "Полученный урон",
-                "loot": "Добыча"}
+ACTIONS = (("play", "Start / pause"), ("clear", "Reset"),
+           ("copy", "Copy to game chat"), ("shot", "Screenshot"),
+           ("settings", "Settings"))
+METRIC_TITLE = {"damage": "Damage", "heal": "Healing", "taken": "Damage taken",
+                "loot": "Loot"}
 
 #: Заголовки колонок под каждую вкладку. Потолок — 6 символов: длиннее не
 #: влезает в узкое окно, а обрезанный заголовок хуже отсутствующего.
 CAPTIONS = {
-    "damage": {"dmg": "УРОН", "dps": "DPS", "pct": "%", "hits": "УД.", "crit": "КР."},
-    "heal": {"dmg": "ХИЛ", "dps": "HPS", "pct": "%", "hits": "КАСТ", "crit": "КР."},
-    "taken": {"dmg": "УРОН", "dps": "DPS", "pct": "%", "hits": "УД.", "crit": "КР."},
-    "loot": {"dmg": "ШТ.", "dps": "", "pct": "%", "hits": "ВИДЫ", "crit": ""},
+    "damage": {"dmg": "DMG", "dps": "DPS", "pct": "%", "hits": "HITS", "crit": "CRIT"},
+    "heal": {"dmg": "HEAL", "dps": "HPS", "pct": "%", "hits": "CASTS", "crit": "CRIT"},
+    "taken": {"dmg": "DMG", "dps": "DPS", "pct": "%", "hits": "HITS", "crit": "CRIT"},
+    "loot": {"dmg": "QTY", "dps": "", "pct": "%", "hits": "TYPES", "crit": ""},
 }
 #: На вкладке добычи нет ни DPS, ни критов — там считают предметы.
 LOOT_COLUMNS = ("dmg", "pct", "hits")
 #: Полоска сводки: значок, подпись, ключ в счётчике добычи. Порядок сверху вниз.
-STATS_ROWS = (("exp", "опыт", "exp"), ("kinah", "кинара", "kinah_in"),
-              ("ap", "АП", "ap"), ("glory", "слава", "glory"),
-              ("kills", "убито", "kills"))
+STATS_ROWS = (("exp", "XP", "exp"), ("kinah", "Kinah", "kinah_in"),
+              ("ap", "AP", "ap"), ("glory", "Glory Points", "glory"),
+              ("kills", "Mobs killed", "kills"))
 
 #: Подпись строки автоатаки. Вынесена в константу: по ней же ищется иконка.
-AUTOATTACK = "автоатака"
+AUTOATTACK = "auto-attack"
 COL_ORDER = ("dmg", "dps", "pct", "hits", "crit")
 
 #: Эталонные значения для замера ширины колонки. Меряем ОДИН раз по ним, а
@@ -110,7 +110,7 @@ COL_ORDER = ("dmg", "dps", "pct", "hits", "crit")
 COL_REF = {"dmg": ("888,88", "M"), "dps": ("888,8", "k"), "pct": ("100%", ""),
            "hits": ("8888", ""), "crit": ("100%", "")}
 
-TOOLBAR_RIGHT = (("menu", "Меню"), ("close", "Выход"))
+TOOLBAR_RIGHT = (("menu", "Menu"), ("close", "Close"))
 
 _ICON_CACHE: dict[tuple, object] = {}
 _ICON_EXT = (".png", ".gif", ".webp", ".dds", ".bmp", ".jpg")
@@ -548,14 +548,14 @@ class Overlay(QWidget):
             return ""
 
         dur = snap.get("duration", 0)
-        head = METRIC_TITLE.get(metric, "Урон")
+        head = METRIC_TITLE.get(metric, "Damage")
         if metric != "loot":
             head += f" {dur // 60}:{dur % 60:02d}"
 
         entries = []
         for r in rows[:10]:
             if metric == "loot":
-                entries.append(f"{r['display']} {r['total']} шт")
+                entries.append(f"{r['display']} {r['total']} pcs")
             else:
                 rate = "hps" if metric == "heal" else "dps"
                 entries.append(f"{r['display']} {fmt_chat(r['total'])} "
@@ -1142,7 +1142,7 @@ class Overlay(QWidget):
         p.setFont(self.f_caps)
         p.setPen(INK3)
         p.drawText(PAD + self.ICON + GAP + 4, base, "#")
-        p.drawText(PAD + self.ICON + GAP + 24, base, "ИГРОК")
+        p.drawText(PAD + self.ICON + GAP + 24, base, "PLAYER")
         x = w - PAD
         for key, cw in reversed(self.columns(w)):
             x -= cw
@@ -1356,8 +1356,8 @@ class Overlay(QWidget):
 
     def _paint_empty(self, p: QPainter, w: int, top: int, bottom: int,
                      snap_: dict) -> None:
-        msg = snap_.get("error") or ("на паузе — нажмите «Старт»"
-                                     if snap_.get("paused") else "ждём боевых событий…")
+        msg = snap_.get("error") or ("paused — press Start"
+                                     if snap_.get("paused") else "waiting for combat…")
         p.setFont(self.f_small)
         p.setPen(DANGER if snap_.get("error") else INK3)
         p.drawText(QRect(PAD * 2, top + 14, w - PAD * 4, 60),
@@ -1398,10 +1398,10 @@ class Overlay(QWidget):
         slots = []
         # Опыт и кинах уехали в полоску под кнопками — в подвале они бы
         # просто дублировались. Здесь остаётся то, чему наверху места нет.
-        pairs = (("exp", "опыт"), ("ap", "AP"), ("kinah", "кинара"))
+        pairs = (("exp", "XP"), ("ap", "AP"), ("kinah", "Kinah"))
         if self.STATS_H:
             # Всё, что уехало в полоску, здесь дублировать незачем.
-            pairs = (("deaths", "смертей"), ("pvp_kills", "PvP"))
+            pairs = (("deaths", "deaths"), ("pvp_kills", "PvP"))
         for key, label in pairs:
             value = loot.get("kinah_in" if key == "kinah" else key)
             if value:
@@ -1409,7 +1409,7 @@ class Overlay(QWidget):
                 slots.append((label, mant + suf))
         total_txt = fmt_ui(snap_.get("total", 0))
         total_w = (QFontMetrics(self.f_num).horizontalAdvance(total_txt[0])
-                   + fm.horizontalAdvance(total_txt[1] + "ИТОГО") + GROUP + GAP)
+                   + fm.horizontalAdvance(total_txt[1] + "TOTAL") + GROUP + GAP)
         for label, value in slots[:2]:
             piece = f"{label} {value}"
             if x + fm.horizontalAdvance(piece) > w - PAD - total_w:
@@ -1427,8 +1427,8 @@ class Overlay(QWidget):
         right = self._txt_right(p, right, base, total_txt[0], INK, self.f_num) - GAP
         p.setFont(self.f_caps)
         p.setPen(INK3)
-        cw = QFontMetrics(self.f_caps).horizontalAdvance("ИТОГО")
-        p.drawText(right - cw, base, "ИТОГО")
+        cw = QFontMetrics(self.f_caps).horizontalAdvance("TOTAL")
+        p.drawText(right - cw, base, "TOTAL")
 
     def _paint_grip(self, p: QPainter, w: int, h: int) -> None:
         p.setPen(QPen(INK_MUTE, 1))
@@ -1542,21 +1542,21 @@ class Overlay(QWidget):
         )
         stats = self.snapshot.get("stats", {})
         if stats.get("read"):
-            act = QAction(f"разобрано {stats.get('parsed', 0)} из {stats['read']} строк",
+            act = QAction(f"parsed {stats.get('parsed', 0)} of {stats['read']} lines",
                           self, enabled=False)
             menu.addAction(act)
             menu.addSeparator()
-        for key, label in (("show_loot", "Показывать добычу внизу"),
-                           ("click_through", "Клик проходит насквозь"),
-                           ("transparent", "Прозрачный фон"),
-                           ("always_on_top", "Поверх всех окон")):
+        for key, label in (("show_loot", "Show footer summary"),
+                           ("click_through", "Click-through"),
+                           ("transparent", "Transparent background"),
+                           ("always_on_top", "Always on top")):
             act = QAction(label, self, checkable=True, checked=bool(self.cfg.get(key)))
             act.triggered.connect(lambda _c, k=key: self._toggle_cfg(k))
             menu.addAction(act)
         menu.addSeparator()
-        menu.addAction("Скрыть окно", self.action_toggle_hide)
-        menu.addAction("Настройки…", lambda: self.on_settings and self.on_settings())
-        menu.addAction("Выход", lambda: self.on_quit and self.on_quit())
+        menu.addAction("Hide window", self.action_toggle_hide)
+        menu.addAction("Settings…", lambda: self.on_settings and self.on_settings())
+        menu.addAction("Quit", lambda: self.on_quit and self.on_quit())
         menu.exec(at)
 
     def _toggle_cfg(self, key: str) -> None:

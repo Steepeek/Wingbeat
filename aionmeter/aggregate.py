@@ -24,11 +24,11 @@ from .parser import SELF
 DAMAGE, HEAL, TAKEN, LOOT = "damage", "heal", "taken", "loot"
 
 #: Периодический урон: владельца эффекта в строке лога физически нет.
-UNATTRIBUTED = "(периодический)"
+UNATTRIBUTED = "(periodic)"
 
 #: Хил, у которого клиент не назвал автора. Отдельной строкой, а не на
 #: игроке: приписывать чужое себе хуже, чем честно сказать «неизвестно».
-UNKNOWN_HEALER = "(лекарь неизвестен)"
+UNKNOWN_HEALER = "(unknown healer)"
 
 def is_player_name(name: str) -> bool:
     """Имя персонажа игрока в Aion — всегда одно слово, без пробелов.
@@ -612,7 +612,7 @@ class Meter:
                     # не находилось. Замер: 78 % против 100 % после правки.
                     item_id = raw[6:].split(";", 1)[0].rstrip("]").strip()
                 name, qual, _grp = itemdb.lookup(item_id) if item_id else ("", "", "")
-                label = name or (f"предмет {item_id}" if item_id else raw)
+                label = name or (f"item {item_id}" if item_id else raw)
                 entries.append((label, count))
                 quality[label] = qual
                 # Иконка ищется по номеру, а не по названию: у предметов своя
