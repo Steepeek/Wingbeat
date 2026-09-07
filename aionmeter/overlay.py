@@ -251,6 +251,10 @@ def item_icon(item_id: str, size: int, dpr: float = 1.0):
 
 
 def make_icon() -> QIcon:
+    """Значок программы. Из пака, если он есть, иначе рисуем примитивами."""
+    art = art_pixmap("appicon")
+    if art is not None:
+        return QIcon(art)
     pm = QPixmap(64, 64)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
@@ -925,7 +929,34 @@ class Overlay(QWidget):
             else:
                 self._big_action(p, name, glyph, colour, paused, size / 26)
             x += size + gap
+        self._paint_wings(p, w)
         p.fillRect(QRectF(0, self.HEAD_H + self.ACT_H - 1, w, 1), RULE)
+
+    def _paint_wings(self, p: QPainter, w: int) -> None:
+        """Угловая накладка по краям полосы кнопок.
+
+        Кнопки стоят по центру, и по бокам от них пустое место — накладка
+        занимает его, а не спорит со вкладками или с рамкой, у которой в
+        углах свой орнамент.
+        """
+        art = art_pixmap("wings") if self.cfg.get("art_frame", True) else None
+        if art is None:
+            return
+        band = self.ACT_H
+        if band < 24:
+            return
+        h = int(band * 0.86)
+        aw = max(1, int(art.width() * h / art.height()))
+        free = (w - (len(ACTIONS) * self.ACT + (len(ACTIONS) - 1) * max(6, self.ACT // 6))) // 2
+        if aw > free - PAD:                  # не влезает — не рисуем вовсе
+            return
+        y = self.HEAD_H + (band - h) // 2
+        p.drawPixmap(QRect(PAD, y, aw, h), art)
+        p.save()
+        p.translate(w - PAD, 0)
+        p.scale(-1, 1)                       # зеркалим для правого края
+        p.drawPixmap(QRect(0, y, aw, h), art)
+        p.restore()
 
     def _texture(self, p: QPainter, rect: QRect, hot: bool, lit: bool) -> None:
         """Лицо кнопки. Картинка из пака, если она есть, иначе рисуем сами.
