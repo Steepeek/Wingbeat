@@ -359,12 +359,12 @@ class Overlay(QWidget):
         self.SKILL_H = self.LOOT_H
         self.STATS_ICON = self.ICON
         self.STATS_H = 0
-        self._measure_stats(self.width())
         # Строка игрока обязана вмещать эмблему класса, иначе та обрежется.
         self.ROW_H = max(self.H + 8, self.ICON + 6)
         # Значок вкладки чуть меньше: он рядом с текстом подписи, и вровень
         # с ним смотрится соразмернее, чем вровень с иконкой предмета.
         self.TAB_ICON = max(16, min(self.ICON, self.H + 6))
+        self.GRIP = max(12, min(20, self.H - 4))
         self.HEAD_H = max(self.H + 14, self.TAB_ICON + 10)
         # Панель действий: размер кнопки настраивается, потому что вкус на
         # «достаточно крупно» у всех разный, а места в оверлее мало.
@@ -372,6 +372,10 @@ class Overlay(QWidget):
         self.ACT_H = self.ACT + 10 if self.cfg.get("show_actions", True) else 0
         # Одна базовая линия на все три кегля в строке
         self.BASE = (self.ROW_H - self.RAIL - 2 + fm.ascent() - fm.descent()) // 2
+        # Сводка меряется последней: её раскладка зависит от всех
+        # остальных высот обвязки, включая подвал и рамку.
+        self._stats_w = None
+        self._measure_stats(self.width())
         self._measure_columns()
 
     def resizeEvent(self, e) -> None:
@@ -1187,7 +1191,7 @@ class Overlay(QWidget):
         p.fillRect(QRect(0, top, w, self.STATS_H), self._bg(L2, chrome=True))
         loot = snap_.get("loot", {})
         rows = tuple((key, label, loot.get(src, 0)) for key, label, src in STATS_ROWS)
-        cols = self._stats_cols(w)
+        cols = getattr(self, "_stats_cols_now", self._stats_cols(w))
         per_col = -(-len(rows) // cols)          # округление вверх
         fm = QFontMetrics(self.f_stat)
         icon = self.STATS_ICON
@@ -1234,8 +1238,20 @@ class Overlay(QWidget):
         if not self.cfg.get("show_stats_strip", True):
             self.STATS_H = 0
             return
-        lines = -(-len(STATS_ROWS) // self._stats_cols(max(1, w)))
-        self.STATS_H = (self.ICON + 6) * lines
+        row_h = self.ICON + 6
+        wide = self._stats_cols(max(1, w))
+        # Высота окна тоже голосует: если после сводки таблице остаётся
+        # меньше четырёх строк, уплотняем её в больше столбцов. Обвязка и так
+        # съедает половину окна, и сводка не должна доедать остаток.
+        other = (self.HEAD_H + self.ACT_H + self.COL_H + 1 + 1
+                 + self.foot_h + 2 * self.frame_inset())
+        free = max(0, self.height() - other)
+        for cols in range(wide, min(len(STATS_ROWS), 3) + 1):
+            lines = -(-len(STATS_ROWS) // cols)
+            if free - row_h * lines >= self.MIN_TABLE_ROWS * self.ROW_H:
+                break
+        self._stats_cols_now = cols
+        self.STATS_H = row_h * lines
 
     def _stats_cols(self, w: int) -> int:
         """Сколько столбцов у полоски сводки.
@@ -1605,7 +1621,7 @@ class Overlay(QWidget):
             self._txt(p, x, base, value, INK2, self.f_small)
             x += fm.horizontalAdvance(value) + GROUP
 
-        right = w - PAD
+        right = w - PAD - self.grip_reserve()
         if total_txt[1]:
             right = self._txt_right(p, right, base, total_txt[1], INK2, self.f_small)
         right = self._txt_right(p, right, base, total_txt[0], INK, self.f_num) - GAP
@@ -1650,9 +1666,26 @@ class Overlay(QWidget):
         blit(w - bd, c, bd, mid_h, sw - src_b, src_c, src_b, s_mid_h)
 
     def _paint_grip(self, p: QPainter, w: int, h: int) -> None:
-        p.setPen(QPen(INK_MUTE, 1))
-        for off in (3, 7):
-            p.drawLine(w - off - 4, h - 4, w - 4, h - off - 4)
+        """Уголок изменения размера, на собственной площадке.
+
+        Прежние две тонкие нити лежали прямо на золотой накладке рамки и
+        пропадали в ней — окно выглядело нерастягиваемым. Сдвинуть их
+        внутрь тоже нельзя, там итоговая цифра. Поэтому у уголка своя
+        подложка, а подвал уступает ей место (см. grip_reserve).
+        """
+        side = self.GRIP
+        inset = self.frame_inset()
+        x, y = w - inset - side - 2, h - inset - side - 2
+        if inset:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(8, 11, 16, 190))
+            p.drawRoundedRect(QRectF(x, y, side, side), 3, 3)
+            p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(INK3 if inset else INK_MUTE, 1))
+        step = max(3, side // 4)
+        for i in range(1, 4):
+            off = i * step
+            p.drawLine(x + side - off - 2, y + side - 3, x + side - 3, y + side - off - 2)
 
     # -- мышь ---------------------------------------------------------------
 
@@ -1702,8 +1735,18 @@ class Overlay(QWidget):
                 return row
         return None
 
+    #: Минимум строк таблицы, ради которых полоска сводки уплотняется.
+    MIN_TABLE_ROWS = 4
+
+    def grip_reserve(self) -> int:
+        """Сколько места справа в подвале держим под уголок."""
+        return (self.GRIP + 6) if self.frame_inset() else 0
+
     def _in_grip(self, pos) -> bool:
-        return pos.x() > self.width() - 16 and pos.y() > self.height() - 16
+        # Зона больше самого значка и растёт вместе с рамкой: попасть в
+        # 16 пикселей вслепую, да ещё поверх орнамента, было тяжело.
+        side = max(18, self.frame_inset() + 16)
+        return pos.x() > self.width() - side and pos.y() > self.height() - side
 
     def mousePressEvent(self, e) -> None:
         if e.button() != Qt.LeftButton:
