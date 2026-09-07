@@ -829,6 +829,24 @@ class Overlay(QWidget):
 
     # -- шапка --------------------------------------------------------------
 
+    def _tab_edge(self) -> int:
+        """Ширина золотого завитка на торце плашки вкладки, в пикселях окна.
+
+        Замер по tab.png: плотное золото идёт от края до x=88 при торце в
+        128 и высоте картинки 256, и правый торец симметричен левому.
+        Дальше от завитка остаются только тонкие рейки канта, на них
+        содержимое залезать уже можно. За этот отступ отодвигаются и
+        значок слева, и подпись справа: без него значок наезжал на
+        завиток, а подпись упиралась во второй. Три пикселя сверху —
+        просвет: ровно по границе завитка подпись читалась приклеенной.
+        """
+        art = art_pixmap("tab") if self.cfg.get("art_frame", True) else None
+        if art is None:
+            return 7
+        cap_src = int(assets.manifest().get("tab_cap", 128))
+        curl = cap_src * 0.69 * (self.HEAD_H - 6) / art.height()
+        return max(7, round(curl) + 3)
+
     def _paint_head(self, p: QPainter, w: int, snap_: dict,
                     dpr: float = 1.0) -> None:
         chrome_h = self.HEAD_H + self.ACT_H
@@ -853,34 +871,40 @@ class Overlay(QWidget):
         # текст хуже отсутствующего.
         icon_w = self.TAB_ICON
         gaps = 6
-        full = sum(fm.horizontalAdvance(l) + icon_w + gaps + 14
+        edge = self._tab_edge()
+        full = sum(fm.horizontalAdvance(l) + icon_w + gaps + 2 * edge
                    for _k, l in METRIC_TABS)
         show_text = full <= avail
+
+        # Картинка значка меньше отведённой ячейки: спрайт заполняет свой
+        # квадрат целиком, и без запаса его углы вылезали за кант плашки.
+        art_w = min(icon_w, self.HEAD_H - 6 - 8)
 
         x = PAD
         for key, label in METRIC_TABS:
             tw = fm.horizontalAdvance(label) if show_text else 0
-            bw = icon_w + (gaps + tw if show_text else 0) + 14
+            bw = icon_w + (gaps + tw if show_text else 0) + 2 * edge
             rect = QRect(x, 3, bw, self.HEAD_H - 6)
             self._hit.append((f"metric:{key}", rect))
             active = key == cur
             hot = self._hot == f"metric:{key}"
             self._plate(p, rect, active=active, hot=hot)
             ink = INK if active else (INK2 if hot else INK3)
-            gi = QRect(rect.x() + 7, rect.y(), icon_w, rect.height())
-            pm = tab_icon(key, icon_w, dpr, active)
+            gi = QRect(rect.x() + edge, rect.y(), icon_w, rect.height())
+            pm = tab_icon(key, art_w, dpr, active)
             if pm is not None:
                 # Наведение приподнимает погасший значок, но не до полного
                 # цвета: цвет остаётся признаком выбранной вкладки.
                 p.setOpacity(1.0 if active else (0.9 if hot else 0.66))
-                p.drawPixmap(gi.x(), gi.y() + (gi.height() - icon_w) // 2, pm)
+                p.drawPixmap(gi.x() + (icon_w - art_w) // 2,
+                             gi.y() + (gi.height() - art_w) // 2, pm)
                 p.setOpacity(1.0)
             else:
-                # Пака нет — рисуем вектором. Масштаб от TAB_ICON, а не от
+                # Пака нет — рисуем вектором. Масштаб от ячейки, а не от
                 # rect: прямоугольник вкладки выше значка, а размер значков
                 # настраивается.
                 self._shape(p, TAB_GLYPH[key], gi, GOLD if active else ink,
-                            self.TAB_ICON / 19.0)
+                            art_w / 19.0)
             if show_text:
                 self._txt(p, gi.right() + gaps, base, label, ink, self.f_tab)
             x += bw + 4
