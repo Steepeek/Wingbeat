@@ -208,6 +208,15 @@ def panel_pixmap():
     return _ART_CACHE["panel"]
 
 
+def art_pixmap(name: str):
+    """Любой рисованный элемент оформления из пака, с кэшем."""
+    if name not in _ART_CACHE:
+        path = assets.ui_icon_path(name)
+        pm = QPixmap(str(path)) if path else None
+        _ART_CACHE[name] = None if (pm is None or pm.isNull()) else pm
+    return _ART_CACHE[name]
+
+
 def header_pixmap():
     """Фактура шапки и полосы кнопок. Растягивается на всю ширину."""
     if "header" not in _ART_CACHE:
@@ -865,6 +874,22 @@ class Overlay(QWidget):
         подсвечена; остальные без подложки вовсе, иначе четыре плашки в ряд
         превращают шапку в кашу.
         """
+        art = art_pixmap("tab") if self.cfg.get("art_frame", True) else None
+        if active and art is not None:
+            # Торцы в натуральную величину, середина растягивается: весь
+            # орнамент сидит в торцах, ровное поле между ними тянется без следа.
+            cap_src = int(assets.manifest().get("tab_cap", 128))
+            sw, sh = art.width(), art.height()
+            cap = max(6, min(rect.width() // 2 - 1, int(cap_src * rect.height() / sh)))
+            mid = rect.width() - 2 * cap
+            p.drawPixmap(QRect(rect.x(), rect.y(), cap, rect.height()),
+                         art, QRect(0, 0, cap_src, sh))
+            if mid > 0:
+                p.drawPixmap(QRect(rect.x() + cap, rect.y(), mid, rect.height()),
+                             art, QRect(cap_src, 0, sw - 2 * cap_src, sh))
+            p.drawPixmap(QRect(rect.right() - cap + 1, rect.y(), cap, rect.height()),
+                         art, QRect(sw - cap_src, 0, cap_src, sh))
+            return
         if active:
             p.setPen(Qt.NoPen)
             p.setBrush(SORTBG)
@@ -903,13 +928,27 @@ class Overlay(QWidget):
         p.fillRect(QRectF(0, self.HEAD_H + self.ACT_H - 1, w, 1), RULE)
 
     def _texture(self, p: QPainter, rect: QRect, hot: bool, lit: bool) -> None:
-        """Фактура кнопки: вертикальный градиент, кант и блик сверху.
+        """Лицо кнопки. Картинка из пака, если она есть, иначе рисуем сами.
 
-        Плоский прямоугольник на стеклянном фоне не читается как кнопка —
-        не видно, что по нему можно щёлкнуть. Градиент с кантом даёт объём,
-        оставаясь спокойным: это не игровая кнопка с камнями, а панель
-        инструмента, которая висит поверх боя.
+        Состояния НЕ отдельные картинки: наведение и нажатие выводятся из
+        обычного подсветкой и затемнением. Три независимые генерации не
+        совпали бы по геометрии, и кнопка дёргалась бы под курсором.
         """
+        art = art_pixmap("button") if self.cfg.get("art_frame", True) else None
+        if art is not None:
+            p.drawPixmap(rect, art)
+            if hot:
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(255, 255, 255, 26))
+                p.drawRoundedRect(rect, R_BUTTON + 2, R_BUTTON + 2)
+                p.setBrush(Qt.NoBrush)
+            if lit:
+                p.setBrush(Qt.NoBrush)
+                p.setPen(QPen(ACCENT, 2))
+                p.drawRoundedRect(QRectF(rect).adjusted(1, 1, -1, -1),
+                                  R_BUTTON + 2, R_BUTTON + 2)
+            return
+
         grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
         top = QColor(255, 255, 255, 30 if hot else 18)
         bottom = QColor(0, 0, 0, 46 if hot else 60)
@@ -925,7 +964,6 @@ class Overlay(QWidget):
         p.setPen(QPen(ACCENT if lit else (EDGE_LIT if hot else EDGE_DARK), 1))
         p.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5),
                           R_BUTTON + 2, R_BUTTON + 2)
-        # Блик по верхней кромке — то, что делает поверхность выпуклой.
         p.setPen(QPen(QColor(255, 255, 255, 34 if hot else 20), 1))
         p.drawLine(rect.x() + 5, rect.y() + 1, rect.right() - 5, rect.y() + 1)
 
@@ -1220,6 +1258,12 @@ class Overlay(QWidget):
         rail_y = snap(y + body_h, dpr)
         rail_h = snap(self.RAIL, dpr)
 
+        # Подсветка своей строки: рисованная полоса, если она есть в паке.
+        # Кладётся ПОД полосу урона, чтобы та осталась читаемой.
+        if r["is_self"] and not muted and self.cfg.get("art_panel", True):
+            own = art_pixmap("rowself")
+            if own is not None:
+                p.drawPixmap(QRect(0, y, w, body_h), own)
         if not muted:
             p.fillRect(QRect(0, y, bar_w, body_h), wash)
         if self._hot == f"row:{r['name']}":
