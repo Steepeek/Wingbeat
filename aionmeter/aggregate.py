@@ -56,6 +56,9 @@ class Actor:
     per_sec: dict[int, int] = field(default_factory=dict)
     runs: list[list[int]] = field(default_factory=list)   # активные отрезки [начало, конец]
     skills: Counter = field(default_factory=Counter)
+    #: Что игрок ПРИМЕНЯЛ помимо урона: бафы, дебафы, контроль, а у
+    #: себя ещё банки и свитки. Ключ -> сколько раз.
+    buffs: Counter = field(default_factory=Counter)
 
     def add(self, ts: int, amount: int, crit: bool, skill: str, active_gap: int) -> None:
         self.total += amount
@@ -295,6 +298,15 @@ class Meter:
             return False
         return seen != ev.actor
 
+    def _add_buff(self, who: str, name: str) -> None:
+        """Отметить применение эффекта или предмета в обеих таблицах.
+
+        И в текущем бою, и в сессии: раскрытая строка показывает то же, что
+        и остальные её цифры, а они берутся из выбранного среза.
+        """
+        for enc in (self._ensure(self.last_ts), self.session):
+            enc.actor(DAMAGE, who).buffs[name] += 1
+
     def _heal_owner(self, ev) -> str:
         """Кому записать хил, когда в строке автор не назван.
 
@@ -474,6 +486,14 @@ class Meter:
         if kind == "applied":
             if ev.skill and ev.actor:
                 self.effect_owner[(ev.skill, ev.target)] = ev.actor
+                self._add_buff(self._owner(ev.actor), ev.skill)
+            return
+
+        if kind == "used_item":
+            # Расходники видны ТОЛЬКО свои: строки «X has used <предмет>»
+            # в клиенте не существует, у согруппников их не увидеть никак.
+            if ev.skill:
+                self._add_buff(self._owner(ev.actor), ev.skill)
             return
 
         if kind == "loot_item":
@@ -625,6 +645,7 @@ class Meter:
                 "cls_name": skilldb.CLASSES.get(self.actor_class(who), ""),
                 "is_self": who == SELF, "is_party": who in self.party,
                 "skills": entries, "quality": quality, "ids": ids,
+                "buffs": [],
             })
         return rows
 
@@ -671,6 +692,7 @@ class Meter:
                     # она считается как «итог минус перечисленное». На живом
                     # логе это давало автоатаке 38 % вместо настоящих 8 %.
                     "skills": a.skills.most_common(),
+                    "buffs": a.buffs.most_common(),
                 })
 
         split = cfg.get("scope") == "split"

@@ -1349,8 +1349,62 @@ class Overlay(QWidget):
         # Возвращаем нижнюю границу ВСЕГО списка, а не отрисованной части:
         # по ней считается высота содержимого для прокрутки.
         y = start + len(items) * step
+
+        buffs = [] if loot_mode else (r.get("buffs") or [])
+        if buffs:
+            y = self._paint_buffs(p, buffs, y, x0, w, bottom, top_edge, step,
+                                  size, dpr, wash)
+
         p.fillRect(QRectF(snap(x0 - 4, dpr), start, snap(1, dpr), y - start), HAIR)
         return y
+
+    def _paint_buffs(self, p: QPainter, buffs, y: int, x0: int, w: int,
+                     bottom: int, top_edge: int, step: int, size: int,
+                     dpr: float, wash) -> int:
+        """Что игрок применял помимо урона: бафы, контроль, банки, свитки.
+
+        Отдельным блоком, потому что это другая величина: у скиллов урон, а
+        здесь число применений. Мешать их в один список — сравнивать
+        несравнимое.
+
+        Расходники видны только у себя: строки «X has used <предмет>» в
+        клиенте нет вовсе, поэтому чужие банки и свитки не увидит никто.
+        """
+        fq = QFontMetrics(self.f_small)
+        cap_h = fq.height() + 6
+        if y + cap_h > top_edge and y < bottom:
+            p.fillRect(QRectF(x0, y + cap_h - 1, w - x0 - PAD, 1), RULE)
+            p.setFont(self.f_caps)
+            p.setPen(INK3)
+            p.drawText(x0 + 4, y + fq.ascent() + 2, "BUFFS & ITEMS")
+        y += cap_h
+
+        top_v = max((v for _k, v in buffs), default=1) or 1
+        fm = QFontMetrics(self.f_body)
+        first = max(0, (top_edge - y) // step)
+        last = min(len(buffs), (bottom - y) // step + 2)
+        yy = y + first * step
+        for label, count in buffs[first:last]:
+            p.fillRect(QRect(x0, yy, int((w - x0 - PAD) * count / top_v),
+                             step - 1), wash)
+            xi = x0 + 4
+            icon = (skill_icon(cfgmod.skill_icons_dir(self.cfg), label, size, dpr)
+                    or _from_pack(assets.item_icon_by_name(label), size, dpr))
+            if icon is not None:
+                p.drawPixmap(xi, yy + (step - size) // 2, icon)
+            else:
+                p.setPen(QPen(HAIR, 1))
+                p.setBrush(Qt.NoBrush)
+                p.drawRoundedRect(QRectF(xi + 0.5, yy + (step - size) // 2 + 0.5,
+                                         size - 1, size - 1), R_CHIP, R_CHIP)
+            xi += size + GAP
+            base = yy + (step + fm.ascent() - fm.descent()) // 2
+            self._txt(p, xi, base,
+                      fm.elidedText(label, Qt.ElideRight, int(w * 0.5)),
+                      INK2, self.f_body)
+            self._txt_right(p, w - PAD, base, f"x{count}", INK3, self.f_body)
+            yy += step
+        return y + len(buffs) * step
 
     # -- пусто и подвал -----------------------------------------------------
 

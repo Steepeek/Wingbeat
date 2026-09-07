@@ -102,6 +102,34 @@ def item_icons() -> dict[str, str]:
     return _item_icons
 
 
+_by_name: dict[str, str] | None = None
+
+
+def item_icon_by_name(name: str) -> Path | None:
+    """Иконка предмета по НАЗВАНИЮ, а не по номеру.
+
+    Нужна для расходников: строка «You have used <предмет>» называет
+    предмет словами, номера в ней нет. Обратный указатель строится один
+    раз и лениво — только если такая строка вообще встретилась.
+    """
+    global _by_name
+    base = root()
+    if base is None or not name:
+        return None
+    if _by_name is None:
+        icons = item_icons()
+        _by_name = {}
+        for item_id, row in items().items():
+            title = row[0] if row else ""
+            if title and item_id in icons:
+                _by_name.setdefault(title, icons[item_id])
+    stem = _by_name.get(name)
+    if not stem:
+        return None
+    path = base / "items" / (stem + ".png")
+    return path if path.is_file() else None
+
+
 def item_icon_path(item_id: str) -> Path | None:
     base = root()
     if base is None or not item_id:
@@ -160,6 +188,7 @@ def reload() -> None:
     _root = None
     _root_done = False
     _skills = _items = _manifest = _item_icons = None
+    globals()['_by_name'] = None
 
 
 def describe() -> str:

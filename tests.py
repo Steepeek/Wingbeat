@@ -401,6 +401,51 @@ check("одиночная запись по нику склеена со сво�
       [(r["name"], r["total"]) for r in m21.snapshot(DAMAGE)["rows"]], [("You", 300)])
 
 
+print("бафы, расходники, вторая форма наложения дота")
+
+e = P("You have used Greater Divine Life Serum.")
+check("предмет использован", (e.kind, e.actor, e.skill),
+      ("used_item", "You", "Greater Divine Life Serum"))
+
+e = P("Lowrider is in the boost Attack state because Lowrider used Rage VI.")
+check("наложение эффекта отдаёт и состояние",
+      (e.kind, e.actor, e.target, e.skill, e.extra),
+      ("applied", "Lowrider", "Lowrider", "Rage VI", "boost Attack"))
+
+# Вторая форма наложения дота: раньше парсер её не знал вовсе, а в выборке
+# из 20 МБ таких строк 4131 — все с именем автора.
+e = P("Alexstrasza used Erosion VI to inflict the continuous damage effect on Zeralukis.")
+check("вторая форма наложения дота разбирается",
+      (e.kind, e.actor, e.target, e.skill),
+      ("applied", "Alexstrasza", "Zeralukis", "Erosion VI"))
+
+m50 = Meter(dict(DEFAULTS))
+m50.cfg["scope"] = "all"
+m50.feed(parse("2026.09.07 12:00:00", "Ally inflicted 100 damage on Mob."))
+m50.feed(parse("2026.09.07 12:00:01",
+               "Ally is in the boost Attack state because Ally used Rage VI."))
+m50.feed(parse("2026.09.07 12:00:02",
+               "Ally is in the boost Attack state because Ally used Rage VI."))
+m50.feed(parse("2026.09.07 12:00:03", "You have used Fine Anti-Shock Scroll."))
+rows50 = {r["name"]: dict(r.get("buffs") or []) for r in m50.snapshot(DAMAGE)["rows"]}
+check("применения эффекта считаются по автору",
+      rows50.get("Ally", {}).get("Rage VI"), 2)
+check("свой расходник попадает в свою строку",
+      rows50.get("You", {}).get("Fine Anti-Shock Scroll"), 1)
+
+# Дот, наложенный второй формой, должен приписаться автору, а не остаться
+# в строке без владельца.
+m51 = Meter(dict(DEFAULTS))
+m51.cfg["scope"] = "all"
+m51.feed(parse("2026.09.07 12:00:00",
+               "Alexstrasza used Erosion VI to inflict the continuous damage effect on Mob."))
+m51.feed(parse("2026.09.07 12:00:01",
+               "Mob received 500 damage due to the effect of Erosion VI."))
+check("тик дота ушёл автору из второй формы",
+      {r["name"]: r["total"] for r in m51.snapshot(DAMAGE)["rows"]},
+      {"Alexstrasza": 500})
+
+
 print("хил: кому он на самом деле принадлежит")
 
 from aionmeter.aggregate import HEAL, UNKNOWN_HEALER

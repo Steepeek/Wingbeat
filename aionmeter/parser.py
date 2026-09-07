@@ -154,8 +154,22 @@ RE_DEATH = re.compile(
 # Нужна, чтобы приписать тики дота: сам тик автора не содержит.
 RE_STATE = re.compile(
     r"^" + _CRIT +
-    r"(?P<target>" + NAME + r") is in the .{1,70}? state because "
+    r"(?P<target>" + NAME + r") is in the (?P<state>.{1,70}?) state because "
     r"(?P<actor>" + NAME + r") used (?P<skill>.+?)\.$")
+
+# "<Кастер> used <Скилл> to inflict the continuous damage effect on <Цель>."
+# Вторая форма наложения дота, которую парсер раньше не знал вовсе: в
+# выборке из 20 МБ таких строк 4131. Она тоже называет автора, поэтому
+# годится для атрибуции тиков наравне с RE_STATE.
+RE_APPLIED_DOT = re.compile(
+    r"^" + _CRIT +
+    r"(?P<actor>" + NAME + r") used (?P<skill>.+?) to inflict "
+    r"the continuous damage effect on (?P<target>.+?)\.$")
+
+# "You have used <предмет>." — STR_USE_ITEM. Банки, свитки, еда, сыворотки.
+# Только от первого лица: шаблона для чужих предметов в клиенте нет,
+# поэтому расход у согруппников не виден в принципе.
+RE_ITEM_USED = re.compile(r"^You have used (?P<item>.+?)\.$")
 
 # Лут. "%0 has acquired %1." — строка группового лута (STR_PARTY_ITEM_WIN).
 RE_LOOT_SELF = re.compile(
@@ -372,7 +386,16 @@ def parse(ts: str, body: str) -> Event | None:
     m = RE_STATE.match(body)
     if m:
         return Event("applied", ts_to_epoch(ts), actor=m["actor"],
-                     target=m["target"], skill=m["skill"])
+                     target=m["target"], skill=m["skill"], extra=m["state"])
+
+    m = RE_APPLIED_DOT.match(body)
+    if m:
+        return Event("applied", ts_to_epoch(ts), actor=m["actor"],
+                     target=m["target"], skill=m["skill"], extra="continuous damage")
+
+    m = RE_ITEM_USED.match(body)
+    if m:
+        return Event("used_item", ts_to_epoch(ts), actor=SELF, skill=m["item"])
 
     m = RE_ROLL.match(body)
     if m:
