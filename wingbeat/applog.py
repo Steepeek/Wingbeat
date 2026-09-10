@@ -1,4 +1,4 @@
-"""Свой лог программы: %APPDATA%\\AionMeter\\aionmeter.log
+"""Свой лог программы: %APPDATA%\\Wingbeat\\wingbeat.log
 
 Нужен ровно для одного: когда у чужого человека что-то не работает, он
 присылает файл, и по нему видно, что произошло. Поэтому пишем немного, но
@@ -22,11 +22,11 @@ from pathlib import Path
 from . import config as cfgmod
 from .version import __version__
 
-LOG_NAME = "aionmeter.log"
+LOG_NAME = "wingbeat.log"
 MAX_BYTES = 512 * 1024
 BACKUPS = 1
 
-log = logging.getLogger("aionmeter")
+log = logging.getLogger("wingbeat")
 _ready = False
 
 
@@ -63,7 +63,7 @@ def setup(debug: bool = False) -> Path:
     log.addHandler(stream)
 
     log.info("=" * 60)
-    log.info("AionMeter %s | Python %s | %s", __version__,
+    log.info("Wingbeat %s | Python %s | %s", __version__,
              platform.python_version(), platform.platform())
     log.info("настройки: %s", cfgmod.config_dir())
     return target

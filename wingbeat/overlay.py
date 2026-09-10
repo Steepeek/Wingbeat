@@ -2829,7 +2829,7 @@ class Overlay(QWidget):
             "QMenu::item:selected{background:rgba(255,255,255,0.08)}"
             "QMenu::separator{height:1px;background:rgba(255,255,255,0.06);margin:4px 6px}"
         )
-        head = QAction(f"AionMeter {__version__}", self, enabled=False)
+        head = QAction(f"Wingbeat {__version__}", self, enabled=False)
         menu.addAction(head)
         stats = self.snapshot.get("stats", {})
         # Строка разбора нужна ИМЕННО когда прочитано ноль: раньше она

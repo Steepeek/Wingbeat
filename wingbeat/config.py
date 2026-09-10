@@ -6,7 +6,12 @@ import json
 import os
 from pathlib import Path
 
-APP_NAME = "AionMeter"
+APP_NAME = "Wingbeat"
+
+#: Как каталог данных назывался до переименования программы. Там у людей
+#: накопленные сессии, база предметов и настройки — при смене имени всё
+#: это обязано переехать, а не осиротеть.
+LEGACY_APP_NAMES = ("AionMeter",)
 
 DEFAULTS: dict = {
     # --- источник данных ---
@@ -104,7 +109,7 @@ DEFAULTS: dict = {
     # --- сессии ---
     # Сессия начинается с первого удара и закрывается кнопкой «Очистить»
     # (или выходом из программы). Закрытая сессия ложится файлом в
-    # %APPDATA%\AionMeter\sessions и живёт там, пока не вытеснится новыми.
+    # %APPDATA%\Wingbeat\sessions и живёт там, пока не вытеснится новыми.
     "keep_sessions": 200,        # сколько последних сессий хранить на диске
     "save_sessions": True,       # писать ли их вообще
 
@@ -117,8 +122,39 @@ DEFAULTS: dict = {
 
 
 def config_dir() -> Path:
-    base = os.environ.get("APPDATA") or str(Path.home())
-    return Path(base) / APP_NAME
+    """Каталог данных, при необходимости переехавший со старого имени.
+
+    Результат намеренно не кэшируется: проверка стоит пары обращений к
+    файловой системе, зато и тесты, подменяющие APPDATA, и переезд между
+    запусками ведут себя предсказуемо. Повторный вызов уже ничего не
+    двигает — после переноса новый каталог существует.
+    """
+    base = Path(os.environ.get("APPDATA") or str(Path.home()))
+    new = base / APP_NAME
+    return _migrate_legacy(base, new) or new
+
+
+def _migrate_legacy(base: Path, new: Path) -> Path | None:
+    """Перенести каталог данных со старого имени программы.
+
+    Возвращает путь, ТОЛЬКО если перенести не удалось и работать надо по
+    старому адресу: молча начать с чистого листа нельзя — человек решит,
+    что пропали все его сессии.
+    """
+    if new.exists():
+        return None
+    for old_name in LEGACY_APP_NAMES:
+        old = base / old_name
+        if not old.is_dir():
+            continue
+        try:
+            # Переименование каталога, а не копирование: мгновенно и не
+            # требует места под вторую копию базы предметов.
+            old.rename(new)
+        except OSError:
+            return old
+        return None
+    return None
 
 
 def config_path() -> Path:

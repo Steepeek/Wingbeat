@@ -1,7 +1,7 @@
 """Сборка инсталлятора: py installer/make.py
 
-Ожидает, что dist/AionMeter уже собран (py build.py). Версия берётся из
-aionmeter/version.py, чтобы номер в «Программах и компонентах», в имени
+Ожидает, что dist/Wingbeat уже собран (py build.py). Версия берётся из
+wingbeat/version.py, чтобы номер в «Программах и компонентах», в имени
 файла и в самой программе не разъезжались.
 """
 
@@ -15,10 +15,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from aionmeter.version import __version__
+from wingbeat.version import __version__
 
 HERE = ROOT / "installer"
-DIST = ROOT / "dist" / "AionMeter"
+DIST = ROOT / "dist" / "Wingbeat"
 
 #: Где Inno Setup лежит по умолчанию. ISCC в PATH попадает редко.
 CANDIDATES = (
@@ -38,7 +38,7 @@ def find_iscc() -> Path | None:
 
 
 def main() -> int:
-    if not (DIST / "AionMeter.exe").is_file():
+    if not (DIST / "Wingbeat.exe").is_file():
         print("Сначала соберите программу:  py build.py")
         return 1
     if not (DIST / "assets").is_dir():
@@ -53,13 +53,13 @@ def main() -> int:
         return 1
 
     (HERE / "out").mkdir(exist_ok=True)
-    cmd = [str(iscc), f"/DMyAppVersion={__version__}", str(HERE / "AionMeter.iss")]
+    cmd = [str(iscc), f"/DMyAppVersion={__version__}", str(HERE / "Wingbeat.iss")]
     print(" ".join(cmd), "\n")
     result = subprocess.run(cmd, cwd=HERE)
     if result.returncode:
         return result.returncode
 
-    out = HERE / "out" / f"AionMeterSetup-{__version__}.exe"
+    out = HERE / "out" / f"WingbeatSetup-{__version__}.exe"
     if out.is_file():
         print(f"\nГотово: {out}  ({out.stat().st_size / 1024 / 1024:.0f} МБ)")
     return 0

@@ -14,13 +14,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from aionmeter.aggregate import (DAMAGE, UNATTRIBUTED, UNKNOWN_HEALER, Meter)
+from wingbeat.aggregate import (DAMAGE, UNATTRIBUTED, UNKNOWN_HEALER, Meter)
 
 NO_OWNER_NAMES = (UNATTRIBUTED, UNKNOWN_HEALER)
-from aionmeter.config import DEFAULTS
-from aionmeter.parser import iter_records, parse, to_int
-from aionmeter.tailer import Tailer
-from aionmeter import skilldb
+from wingbeat.config import DEFAULTS
+from wingbeat.parser import iter_records, parse, to_int
+from wingbeat.tailer import Tailer
+from wingbeat import skilldb
 
 NBSP = " "
 ok = 0
@@ -450,7 +450,7 @@ check("тик дота ушёл автору из второй формы",
 
 print("хил: кому он на самом деле принадлежит")
 
-from aionmeter.aggregate import HEAL, UNKNOWN_HEALER
+from wingbeat.aggregate import HEAL, UNKNOWN_HEALER
 
 def _heal_meter(self_class="RA", skills=None):
     # Класс задаём ДО создания: Meter засевает им голоса в __init__, иначе
@@ -572,7 +572,7 @@ check("в скобках и точках с запятой номер не ос�
 
 print("версии")
 
-from aionmeter import version as vermod
+from wingbeat import version as vermod
 
 check("разбор тега", vermod.as_tuple("v1.2.3"), (1, 2, 3))
 check("хвост после дефиса отбрасывается", vermod.as_tuple("0.4.0-beta2"), (0, 4, 0))
@@ -587,7 +587,7 @@ check("префикс v не мешает", vermod.is_newer("v2.0.0", "1.9.9"), 
 
 print("ассет-пак")
 
-from aionmeter import assets as assetsmod
+from wingbeat import assets as assetsmod
 
 # Пака в тестовом окружении может не быть — это законно, и всё обязано
 # продолжать работать: иконок просто не будет.
@@ -655,11 +655,11 @@ check("первый ранг откатывается только к имени
 print("настройки: чтение конфига")
 
 import codecs, json as _json, os as _os, tempfile as _tf
-_tmpcfg = Path(_tf.mkdtemp(prefix="aionmeter-cfg-"))
+_tmpcfg = Path(_tf.mkdtemp(prefix="wingbeat-cfg-"))
 _old_appdata = _os.environ.get("APPDATA")
 _os.environ["APPDATA"] = str(_tmpcfg)
 try:
-    from aionmeter import config as _c
+    from wingbeat import config as _c
     _path = _c.config_path()
     _path.parent.mkdir(parents=True, exist_ok=True)
     _body = _json.dumps({"dps_window": 42, "metric": "heal"}, ensure_ascii=False)
@@ -678,7 +678,7 @@ finally:
 
 print("настройки: пути к иконкам подставляются сами")
 
-from aionmeter import config as _cfgmod
+from wingbeat import config as _cfgmod
 _cfg = dict(DEFAULTS)
 check("явный путь имеет приоритет",
       _cfgmod.icons_dir({"icons_dir": r"D:\my\icons"}), r"D:\my\icons")
@@ -687,9 +687,77 @@ check("несуществующая папка по умолчанию даёт 
 check("иконки скиллов берут свой каталог, а не каталог классов",
       _cfgmod.skill_icons_dir({"skill_icons_dir": "X"}), "X")
 
+print("настройки: переезд каталога данных со старого имени")
+
+_mig_home = Path(_tf.mkdtemp(prefix="wingbeat-migrate-"))
+_old_appdata = _os.environ.get("APPDATA")
+try:
+    # 1. Есть только старый каталог — он должен переехать целиком.
+    _base = _mig_home / "case1"
+    _legacy = _base / "AionMeter"
+    (_legacy / "sessions").mkdir(parents=True)
+    (_legacy / "config.json").write_text('{"dps_window": 7}', "utf-8")
+    (_legacy / "sessions" / "session-1.json").write_text("{}", "utf-8")
+    _os.environ["APPDATA"] = str(_base)
+    _got = _cfgmod.config_dir()
+    check("каталог переехал на новое имя", _got, _base / "Wingbeat")
+    check("настройки не потерялись при переезде",
+          (_got / "config.json").read_text("utf-8"), '{"dps_window": 7}')
+    check("сессии не потерялись при переезде",
+          (_got / "sessions" / "session-1.json").exists(), True)
+    check("старого каталога больше нет", _legacy.exists(), False)
+    check("повторный вызов ничего не двигает", _cfgmod.config_dir(), _got)
+
+    # 2. Новый каталог уже есть — старый трогать нельзя: сливать два
+    #    набора сессий вслепую хуже, чем оставить всё как есть.
+    _base = _mig_home / "case2"
+    (_base / "AionMeter").mkdir(parents=True)
+    (_base / "AionMeter" / "config.json").write_text("старое", "utf-8")
+    (_base / "Wingbeat").mkdir(parents=True)
+    (_base / "Wingbeat" / "config.json").write_text("новое", "utf-8")
+    _os.environ["APPDATA"] = str(_base)
+    check("при готовом новом каталоге берётся он",
+          (_cfgmod.config_dir() / "config.json").read_text("utf-8"), "новое")
+    check("старый каталог при этом цел",
+          (_base / "AionMeter" / "config.json").read_text("utf-8"), "старое")
+
+    # 3. Ничего нет — обычный первый запуск.
+    _base = _mig_home / "case3"
+    _base.mkdir(parents=True)
+    _os.environ["APPDATA"] = str(_base)
+    check("на чистой машине путь просто новый",
+          _cfgmod.config_dir(), _base / "Wingbeat")
+
+    # 4. Переименование не удалось — каталог занят другой программой.
+    #    Тогда работаем по старому адресу: показать пустой метр и молча
+    #    бросить данные человека хуже, чем остаться на старом месте.
+    _base = _mig_home / "case4"
+    _legacy = _base / "AionMeter"
+    _legacy.mkdir(parents=True)
+    (_legacy / "config.json").write_text('{"dps_window": 9}', "utf-8")
+    _os.environ["APPDATA"] = str(_base)
+    _real_rename = Path.rename
+
+    def _refuse(self, target):
+        raise OSError("каталог занят")
+
+    Path.rename = _refuse
+    try:
+        _got = _cfgmod.config_dir()
+    finally:
+        Path.rename = _real_rename
+    check("не переехали — работаем по старому пути", _got, _legacy)
+    check("данные при неудаче остались на месте",
+          (_got / "config.json").read_text("utf-8"), '{"dps_window": 9}')
+finally:
+    if _old_appdata is not None:
+        _os.environ["APPDATA"] = _old_appdata
+    else:
+        _os.environ.pop("APPDATA", None)
+
 print("агрегатор: мобы, петы и PvP")
 
-from aionmeter.aggregate import is_player_name
+from wingbeat.aggregate import is_player_name
 check("ник игрока — одно слово", is_player_name("Steepeek"), True)
 check("имя с пробелом игроком не считается", is_player_name("Ulgorn Raider"), False)
 
@@ -785,7 +853,7 @@ class _FakeEngine:
 
 def _copy_text(rows, metric="damage", duration=134):
     from PySide6.QtWidgets import QApplication
-    from aionmeter.overlay import Overlay
+    from wingbeat.overlay import Overlay
     app = QApplication.instance() or QApplication([])
     snap = {"rows": rows, "metric": metric, "duration": duration, "loot": {},
             "total": sum(r["total"] for r in rows), "stats": {}}
@@ -844,7 +912,7 @@ check("качество и тип берутся из любого места с
       _items["186000130"][1:], ["RARE", "MATERIAL"])
 check("предмет без качества не теряется", _items["152000911"], ["Magical Aether", "", ""])
 
-from aionmeter import itemdb
+from wingbeat import itemdb
 check("у каждого качества есть цвет и название",
       sorted(itemdb.QUALITY_COLOURS) == sorted(itemdb.QUALITY_NAMES), True)
 check("неизвестный предмет даёт пустое название", itemdb.lookup("нет такого")[0], "")
@@ -864,7 +932,7 @@ check("после очистки счёт идёт заново", m7.snapshot(DA
 
 print("tail: дочитывание, обрыв строки, ротация")
 
-tmp = Path(tempfile.mkdtemp(prefix="aionmeter-"))
+tmp = Path(tempfile.mkdtemp(prefix="wingbeat-"))
 log = tmp / "Chat.log"
 log.write_bytes(b"")
 
@@ -975,7 +1043,7 @@ check("на хиле фильтр не действует", m_b.snapshot("heal")
 
 print("сессии: выгрузка и файлы")
 
-from aionmeter import sessions as sessmod
+from wingbeat import sessions as sessmod
 
 cfg_s, m_s = _boss_meter()
 data = m_s.export()
@@ -991,7 +1059,7 @@ m_s.reset()
 check("после очистки выгружать нечего", m_s.export(), None)
 
 # Файлы кладём во временный APPDATA, чтобы не трогать настоящие настройки.
-sess_home = Path(tempfile.mkdtemp(prefix="aionmeter-sessions-"))
+sess_home = Path(tempfile.mkdtemp(prefix="wingbeat-sessions-"))
 old_appdata = os.environ.get("APPDATA")
 os.environ["APPDATA"] = str(sess_home)
 try:
@@ -1037,8 +1105,8 @@ finally:
 
 print("исправленные шаблоны и живучесть разбора")
 
-from aionmeter.config import detect_encoding, system_ansi
-from aionmeter.parser import MAX_DIGITS, to_int
+from wingbeat.config import detect_encoding, system_ansi
+from wingbeat.parser import MAX_DIGITS, to_int
 
 # Длинные имена мобов: при лимите в 32 символа целые инстансы выпадали.
 e = P("You received 1" + NBSP + "164 damage from Pashid Destruction Unit Rearguard.")
@@ -1150,7 +1218,7 @@ check("строки «(периодический)» не появилось", U
 
 print("приватность файла нераспознанного")
 
-from aionmeter.engine import Engine
+from wingbeat.engine import Engine
 
 eng_chk = Engine(dict(DEFAULTS))
 for body, want in (
@@ -1302,7 +1370,7 @@ try:
     from PySide6.QtCore import QPointF
     from PySide6.QtGui import QPixmap
     from PySide6.QtWidgets import QApplication
-    from aionmeter.overlay import Overlay
+    from wingbeat.overlay import Overlay
 
     _app = QApplication.instance() or QApplication([])
     _srow = {"name": "You", "display": "Steepeek", "cls": "RA", "cls_name": "Ranger",
@@ -1354,7 +1422,7 @@ except ImportError:
 
 print("подсказки у кнопок и вкладок")
 
-from aionmeter.overlay import ACTIONS, HELP, METRIC_TABS, TOOLBAR_RIGHT
+from wingbeat.overlay import ACTIONS, HELP, METRIC_TABS, TOOLBAR_RIGHT
 
 _missing = [f"btn:{n}" for n, _t in ACTIONS + TOOLBAR_RIGHT
             if f"btn:{n}" not in HELP]
@@ -1370,7 +1438,7 @@ check("пояснения короткие", _long, [])
 
 try:
     from PySide6.QtWidgets import QApplication
-    from aionmeter.overlay import Overlay
+    from wingbeat.overlay import Overlay
     _app = QApplication.instance() or QApplication([])
     _cfg_h = dict(DEFAULTS)
     _ovh = Overlay(_FakeEngine({"rows": [], "metric": "damage", "duration": 0,
@@ -1387,11 +1455,11 @@ except ImportError:
 
 print("открытие сохранённой сессии в обычных вкладках")
 
-_sv = Path(tempfile.mkdtemp(prefix="aionmeter-view-"))
+_sv = Path(tempfile.mkdtemp(prefix="wingbeat-view-"))
 _old_appdata = os.environ.get("APPDATA")
 os.environ["APPDATA"] = str(_sv)
 try:
-    from aionmeter import sessions as _sess
+    from wingbeat import sessions as _sess
     _data = {
         "start": 1757530000, "end": 1757533600, "duration": 3600, "boss": "Modor",
         "kill_count": 14, "total": 17000000, "self_name": "Steepeek",
@@ -1416,7 +1484,7 @@ try:
     check("сессия сохранена", bool(_path), True)
 
     from PySide6.QtWidgets import QApplication
-    from aionmeter.overlay import Overlay
+    from wingbeat.overlay import Overlay
     _app = QApplication.instance() or QApplication([])
     _cfg = dict(DEFAULTS)
     _ov2 = Overlay(_FakeEngine({"rows": [], "metric": "damage", "duration": 0,
@@ -1465,14 +1533,14 @@ finally:
 
 print("привязка к клиенту Origin")
 
-from aionmeter.config import ORIGIN_MAGIC, is_origin_client
+from wingbeat.config import ORIGIN_MAGIC, is_origin_client
 
-_org = Path(tempfile.mkdtemp(prefix="aionmeter-origin-"))
+_org = Path(tempfile.mkdtemp(prefix="wingbeat-origin-"))
 (_org / "Data" / "Items").mkdir(parents=True, exist_ok=True)
 (_org / "Data" / "Items" / "items.pak").write_bytes(ORIGIN_MAGIC + b"x" * 64)
 check("клиент с паками Origin опознан", is_origin_client(str(_org)), True)
 
-_alien = Path(tempfile.mkdtemp(prefix="aionmeter-alien-"))
+_alien = Path(tempfile.mkdtemp(prefix="wingbeat-alien-"))
 (_alien / "Data" / "Items").mkdir(parents=True, exist_ok=True)
 (_alien / "Data" / "Items" / "items.pak").write_bytes(b"PK" + b"x" * 64)
 check("обычный ZIP-пак Origin-ом не считается", is_origin_client(str(_alien)), False)
@@ -1491,7 +1559,7 @@ for _tmp in (_org, _alien):
 
 print("язык интерфейса")
 
-from aionmeter import skilldb as _sk
+from wingbeat import skilldb as _sk
 check("названия классов английские", _sk.CLASSES["RA"], "Ranger")
 check("все классы без кириллицы",
       any(any("Ѐ" <= ch <= "ӿ" for ch in v) for v in _sk.CLASSES.values()),
@@ -1499,7 +1567,7 @@ check("все классы без кириллицы",
 
 print("шапка с названием и версия в подвале")
 
-from aionmeter.version import STAGE, display as version_display
+from wingbeat.version import STAGE, display as version_display
 
 check("версия показывается со стадией", version_display(), f"0.1.0 {STAGE}")
 check("стадия — бета", STAGE, "beta")
@@ -1507,7 +1575,7 @@ check("стадия — бета", STAGE, "beta")
 try:
     from PySide6.QtCore import QPointF
     from PySide6.QtWidgets import QApplication
-    from aionmeter.overlay import APP_NAME, Overlay
+    from wingbeat.overlay import APP_NAME, Overlay
 
     _app = QApplication.instance() or QApplication([])
     _ov = Overlay(_FakeEngine({"rows": [], "metric": "damage", "duration": 0,

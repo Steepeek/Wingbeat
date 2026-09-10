@@ -13,7 +13,7 @@
     <item_template id="186000130" name="Crucible Insignia" quality="RARE" .../>
 
 Берём его у beyond-aion (GPL-3.0, самый живой из эмуляторов), выжимаем
-номер, название и качество и складываем в %APPDATA%\\AionMeter\\items.json.
+номер, название и качество и складываем в %APPDATA%\\Wingbeat\\items.json.
 Проверено на живом логе: 231 из 234 предметов опознаны, это 99 %.
 
 Сам метр в сеть не ходит: эта утилита запускается руками и один раз.
@@ -32,7 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from aionmeter import config as cfgmod
+from wingbeat import config as cfgmod
 
 URL = ("https://raw.githubusercontent.com/beyond-aion/aion-server/master/"
        "game-server/data/static_data/items/item_templates.xml")
@@ -77,7 +77,7 @@ def main() -> int:
         print(f"качаю {args.url}\n(около 55 МБ, один раз)")
         try:
             req = urllib.request.Request(
-                args.url, headers={"User-Agent": "AionMeter-itemdb/1.0"})
+                args.url, headers={"User-Agent": "Wingbeat-itemdb/1.0"})
             with urllib.request.urlopen(req, timeout=180) as resp:
                 blob = resp.read()
         except (urllib.error.URLError, OSError) as e:

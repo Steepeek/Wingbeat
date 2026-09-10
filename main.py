@@ -1,4 +1,4 @@
-"""AionMeter — счётчик урона для Aion, читающий Chat.log.
+"""Wingbeat — счётчик урона для Aion, читающий Chat.log.
 
     py main.py
 """
@@ -21,13 +21,13 @@ from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from aionmeter import applog
-from aionmeter import config as cfgmod
-from aionmeter import updates
-from aionmeter.engine import Engine
-from aionmeter.overlay import APP_NAME, Overlay, make_icon
-from aionmeter.settings_dialog import SettingsDialog
-from aionmeter.version import __version__, display as version_display
+from wingbeat import applog
+from wingbeat import config as cfgmod
+from wingbeat import updates
+from wingbeat.engine import Engine
+from wingbeat.overlay import APP_NAME, Overlay, make_icon
+from wingbeat.settings_dialog import SettingsDialog
+from wingbeat.version import __version__, display as version_display
 
 
 class App:
@@ -70,7 +70,7 @@ class App:
         """
         if not self.first_run:
             return
-        from aionmeter import assets
+        from wingbeat import assets
         where = cfgmod.resolve_log_path(self.cfg)
         if where:
             body = ("Game found, reading Chat.log.\n"
@@ -156,7 +156,7 @@ class App:
         failed = self.overlay.hotkeys.failed if self.overlay.hotkeys else []
         if failed:
             self.tray.showMessage(
-                "AionMeter",
+                "Wingbeat",
                 "These hotkeys are already taken by another program and will "
                 "not work: " + ", ".join(failed)
                 + ". Change them in Settings, or use the buttons in the window.",
@@ -184,7 +184,7 @@ class App:
 
     def open_about(self) -> None:
         """Окно «О программе». Как и настройки — поверх метра."""
-        from aionmeter.about_dialog import AboutDialog
+        from wingbeat.about_dialog import AboutDialog
         self.overlay.suspend_topmost(True)
         dlg = AboutDialog(parent=self.overlay)
         dlg.show()
@@ -228,7 +228,7 @@ class App:
                 QMessageBox.warning(dlg, APP_NAME, self.engine.error)
             elif self.overlay.hotkeys and self.overlay.hotkeys.failed:
                 self.tray.showMessage(
-                    "AionMeter",
+                    "Wingbeat",
                     "Could not register hotkeys: "
                     + ", ".join(self.overlay.hotkeys.failed)
                     + ". They are most likely taken by another program.",

@@ -42,7 +42,7 @@ def fetch(repo: str = REPO, timeout: int = TIMEOUT) -> dict | None:
     try:
         req = urllib.request.Request(
             API.format(repo=repo),
-            headers={"User-Agent": f"AionMeter/{__version__}",
+            headers={"User-Agent": f"Wingbeat/{__version__}",
                      "Accept": "application/vnd.github+json"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))

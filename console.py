@@ -21,8 +21,8 @@ for stream in (sys.stdout, sys.stderr):
 if os.name == "nt":
     os.system("")   # включает обработку ANSI-последовательностей в cmd/PowerShell
 
-from aionmeter import config as cfgmod
-from aionmeter.engine import Engine, load_history
+from wingbeat import config as cfgmod
+from wingbeat.engine import Engine, load_history
 
 BAR = "█"
 

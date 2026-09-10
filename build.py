@@ -1,4 +1,4 @@
-"""Сборка в dist/AionMeter: py build.py
+"""Сборка в dist/Wingbeat: py build.py
 
 Осознанные решения:
 
@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 
-from aionmeter.version import __version__
+from wingbeat.version import __version__
 
 EXCLUDE = [
     "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebChannel",
@@ -62,13 +62,13 @@ def write_version_file() -> Path:
                     mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0),
   kids=[
     StringFileInfo([StringTable('040904B0', [
-        StringStruct('CompanyName', 'AionMeter'),
+        StringStruct('CompanyName', 'Wingbeat'),
         StringStruct('FileDescription', 'Damage meter for Aion (reads Chat.log)'),
         StringStruct('FileVersion', '{__version__}'),
-        StringStruct('InternalName', 'AionMeter'),
+        StringStruct('InternalName', 'Wingbeat'),
         StringStruct('LegalCopyright', 'MIT License. Game art belongs to NCSoft.'),
-        StringStruct('OriginalFilename', 'AionMeter.exe'),
-        StringStruct('ProductName', 'AionMeter'),
+        StringStruct('OriginalFilename', 'Wingbeat.exe'),
+        StringStruct('ProductName', 'Wingbeat'),
         StringStruct('ProductVersion', '{__version__}')])]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])
   ]
@@ -97,7 +97,7 @@ def main() -> int:
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean",
         "--onedir", "--windowed", "--noupx",
-        "--name", "AionMeter",
+        "--name", "Wingbeat",
         "--icon", str(ROOT / "docs" / "wingbeat.ico"),
         "--version-file", str(version_file),
         "--distpath", str(ROOT / "dist"),
@@ -113,7 +113,7 @@ def main() -> int:
     if result.returncode:
         return result.returncode
 
-    out = ROOT / "dist" / "AionMeter"
+    out = ROOT / "dist" / "Wingbeat"
     for extra in EXTRA_FILES:
         shutil.copy(ROOT / extra, out / extra)
 

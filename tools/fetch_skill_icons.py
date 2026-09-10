@@ -4,7 +4,7 @@
 
 Сам метр в сеть не ходит вообще. Эта утилита запускается руками, один раз:
 она берёт список скиллов, которые реально встретились в вашем Chat.log,
-и складывает картинки в %APPDATA%\\AionMeter\\skillicons. Дальше метр просто
+и складывает картинки в %APPDATA%\\Wingbeat\\skillicons. Дальше метр просто
 читает эту папку.
 
 Источник — Aion Wiki на Fandom. Файлы там названы точным названием скилла
@@ -34,11 +34,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from aionmeter import config as cfgmod
-from aionmeter.parser import iter_records, parse
+from wingbeat import config as cfgmod
+from wingbeat.parser import iter_records, parse
 
 API = "https://aion.fandom.com/api.php"
-UA = "AionMeter-icon-fetcher/1.0 (personal use; github.com/AionMeter)"
+UA = "Wingbeat-icon-fetcher/1.0 (personal use; github.com/Wingbeat)"
 
 ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"]
 _RANK_RE = re.compile(r"^(.*) (" + "|".join(ROMAN) + r")$")
@@ -93,7 +93,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--log", help="путь к Chat.log")
     # %% — иначе argparse примет %A за спецификатор формата
-    ap.add_argument("--out", help="куда складывать (по умолчанию %%APPDATA%%/AionMeter/skillicons)")
+    ap.add_argument("--out", help="куда складывать (по умолчанию %%APPDATA%%/Wingbeat/skillicons)")
     ap.add_argument("--limit", type=int, default=1500, help="потолок числа загрузок")
     args = ap.parse_args()
 

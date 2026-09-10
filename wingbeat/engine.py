@@ -164,13 +164,13 @@ class Engine:
             except Exception:                       # noqa: BLE001
                 pass
 
-        threading.Thread(target=run, name="AionMeter-assets", daemon=True).start()
+        threading.Thread(target=run, name="Wingbeat-assets", daemon=True).start()
 
     def _start_thread(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, name="AionMeter-read",
+        self._thread = threading.Thread(target=self._loop, name="Wingbeat-read",
                                         daemon=True)
         self._thread.start()
 
@@ -442,7 +442,7 @@ class Engine:
                 self._unknown_fh = open(path, "a", encoding="utf-8")
                 self._unknown_fh.write(
                     f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} "
-                    f"AionMeter {__version__} {self.encoding} ---\n")
+                    f"Wingbeat {__version__} {self.encoding} ---\n")
             self._unknown_fh.write(body + "\n")
             if self.unknown % 50 == 0:
                 self._unknown_fh.flush()

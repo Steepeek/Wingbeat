@@ -20,7 +20,7 @@ def display() -> str:
     return f"{__version__} {STAGE}".strip()
 
 #: Куда ходить за обновлениями. Пусто = проверка выключена.
-REPO = "Steepeek/AionMeter"
+REPO = "Steepeek/Wingbeat"
 
 
 def as_tuple(text: str) -> tuple[int, ...]:
