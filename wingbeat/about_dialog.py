@@ -27,7 +27,8 @@ from .version import display as version_display
 
 #: Внешние адреса. Пустая строка = кнопку не показываем.
 LINKS = (
-    ("GitHub", ""),
+    ("GitHub", "https://github.com/Steepeek/Wingbeat"),
+    ("Website", "https://wingbeat.fun"),
     ("Discord", ""),
     ("Feedback", ""),
 )
