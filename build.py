@@ -46,6 +46,41 @@ EXTRA_FILES = ("README.md", "LICENSE")
 EXTRA_DIRS = ("assets",)
 
 
+def write_version_file() -> Path:
+    """Ресурс версии для exe.
+
+    Зачем он нужен. Во-первых, без него в свойствах файла пусто, и два
+    тестера с разными сборками неотличимы. Во-вторых, пустой ресурс версии
+    у неподписанного exe — один из типовых признаков в эвристиках
+    антивирусов и SmartScreen; заполнить его ничего не стоит, а число
+    ложных срабатываний он снижает.
+    """
+    parts = [int(x) for x in __version__.split(".")[:3]] + [0, 0, 0]
+    quad = ", ".join(str(x) for x in parts[:4])
+    text = f"""VSVersionInfo(
+  ffi=FixedFileInfo(filevers=({quad}), prodvers=({quad}),
+                    mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0),
+  kids=[
+    StringFileInfo([StringTable('040904B0', [
+        StringStruct('CompanyName', 'AionMeter'),
+        StringStruct('FileDescription', 'Damage meter for Aion (reads Chat.log)'),
+        StringStruct('FileVersion', '{__version__}'),
+        StringStruct('InternalName', 'AionMeter'),
+        StringStruct('LegalCopyright', 'MIT License. Game art belongs to NCSoft.'),
+        StringStruct('OriginalFilename', 'AionMeter.exe'),
+        StringStruct('ProductName', 'AionMeter'),
+        StringStruct('ProductVersion', '{__version__}')])]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"""
+    build_dir = ROOT / "build"
+    build_dir.mkdir(parents=True, exist_ok=True)
+    path = build_dir / "version_info.txt"
+    path.write_text(text, "utf-8")
+    return path
+
+
 def main() -> int:
     try:
         import PyInstaller  # noqa: F401
@@ -56,12 +91,15 @@ def main() -> int:
     for stale in ("build", "dist"):
         shutil.rmtree(ROOT / stale, ignore_errors=True)
 
+    version_file = write_version_file()
+
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean",
         "--onedir", "--windowed", "--noupx",
         "--name", "AionMeter",
-        "--icon", str(ROOT / "docs" / "aionmeter.ico"),
+        "--icon", str(ROOT / "docs" / "wingbeat.ico"),
+        "--version-file", str(version_file),
         "--distpath", str(ROOT / "dist"),
         "--workpath", str(ROOT / "build"),
         "--specpath", str(ROOT / "build"),

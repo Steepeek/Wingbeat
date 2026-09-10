@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import ctypes
 import math
+import time
 from ctypes import wintypes
 from pathlib import Path
 
@@ -49,8 +50,11 @@ from . import assets
 from . import config as cfgmod
 from . import hotkeys as hk
 from . import itemdb
+from . import sessions as sessmod
 from . import skilldb
 from .aggregate import UNATTRIBUTED, UNKNOWN_HEALER
+from .parser import SELF
+from .version import __version__, display as version_display
 
 #: Строки, у которых нет игрока-владельца: рисуются приглушённо и
 #: последними, в чат не копируются. Периодический урон без автора и
@@ -69,11 +73,15 @@ GWL_EXSTYLE = -20
 WS_EX_TRANSPARENT = 0x00000020
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_NOACTIVATE = 0x08000000
-HWND_TOPMOST = -1
+HWND_TOPMOST, HWND_NOTOPMOST = -1, -2
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
 
+#: Название в шапке. Отдельной константой: оно попадает и в заголовок
+#: окна, и в подпись снимка экрана, и меняться должно в одном месте.
+APP_NAME = "Wingbeat"
+
 METRIC_TABS = (("damage", "Damage"), ("heal", "Healing"), ("taken", "Taken"),
-               ("loot", "Loot"))
+               ("loot", "Loot"), ("sessions", "Sessions"))
 
 #: Значок для каждой вкладки. Рисуются примитивами: подходящих символов нет
 #: ни в одном системном шрифте, а тащить ради четырёх картинок шрифт иконок
@@ -82,14 +90,15 @@ METRIC_TABS = (("damage", "Damage"), ("heal", "Healing"), ("taken", "Taken"),
 #: живёт при DPR 1 и 2, а готовые картинки интерфейса в клиенте лежат по
 #: 20-24 px и на кнопке в 48 px расплываются.
 TAB_GLYPH = {"damage": "sword", "heal": "cross", "taken": "shield",
-             "loot": "chest"}
+             "loot": "chest", "sessions": "scroll"}
 
 #: Крупные кнопки действий. Порядок слева направо — по частоте нажатий.
 ACTIONS = (("play", "Start / pause"), ("clear", "Reset"),
-           ("copy", "Copy to game chat"), ("shot", "Screenshot"),
-           ("settings", "Settings"))
+           ("boss", "Boss damage only"), ("copy", "Copy to game chat"),
+           ("shot", "Screenshot"), ("stream", "Streamer mode"),
+           ("settings", "Settings"), ("about", "About Wingbeat"))
 METRIC_TITLE = {"damage": "Damage", "heal": "Healing", "taken": "Damage taken",
-                "loot": "Loot"}
+                "loot": "Loot", "sessions": "Sessions"}
 
 #: Заголовки колонок под каждую вкладку. Потолок — 6 символов: длиннее не
 #: влезает в узкое окно, а обрезанный заголовок хуже отсутствующего.
@@ -98,9 +107,14 @@ CAPTIONS = {
     "heal": {"dmg": "HEAL", "dps": "HPS", "pct": "%", "hits": "CASTS", "crit": "CRIT"},
     "taken": {"dmg": "DMG", "dps": "DPS", "pct": "%", "hits": "HITS", "crit": "CRIT"},
     "loot": {"dmg": "QTY", "dps": "", "pct": "%", "hits": "TYPES", "crit": ""},
+    # У сессии «удары» — это убитые мобы, а доля — вклад своего урона в общий.
+    "sessions": {"dmg": "DMG", "dps": "DPS", "pct": "YOU%", "hits": "KILLS",
+                 "crit": ""},
 }
 #: На вкладке добычи нет ни DPS, ни критов — там считают предметы.
 LOOT_COLUMNS = ("dmg", "pct", "hits")
+#: У сессии крита нет: он у каждого игрока свой, а строка — про всю сессию.
+SESSION_COLUMNS = ("dmg", "dps", "pct", "hits")
 #: Полоска сводки: значок, подпись, ключ в счётчике добычи. Порядок сверху вниз.
 STATS_ROWS = (("exp", "XP", "exp"), ("kinah", "Kinah", "kinah_in"),
               ("ap", "AP", "ap"), ("glory", "Glory Points", "glory"),
@@ -116,7 +130,48 @@ COL_ORDER = ("dmg", "dps", "pct", "hits", "crit")
 COL_REF = {"dmg": ("888,88", "M"), "dps": ("888,8", "k"), "pct": ("100%", ""),
            "hits": ("8888", ""), "crit": ("100%", "")}
 
-TOOLBAR_RIGHT = (("menu", "Menu"), ("close", "Close"))
+#: Справа в шапке остаётся только закрытие. Кнопку меню убрали: всё, что
+#: в нём было, либо лежит в настройках, либо вызывается правым кликом по
+#: окну и значком в трее, а место в шапке дороже.
+#: Что показывать при наведении: (заголовок, пояснение). Пиктограммы в
+#: шапке без слов не угадываются — облако для «скопировать в чат» тому
+#: пример, — а одного названия мало: «Reset» не говорит, что счёт при этом
+#: уезжает в файл сессии. Поэтому две строки, не больше.
+HELP: dict[str, tuple[str, str]] = {
+    "btn:play": ("Start / pause",
+                 "Stops counting. The log keeps being read, so nothing is lost."),
+    "btn:clear": ("Reset",
+                  "Clears the table and saves the finished session to disk."),
+    "btn:boss": ("Boss damage only",
+                 "Counts only damage on the main target, ignoring adds."),
+    "btn:copy": ("Copy to game chat",
+                 "Puts the result on the clipboard, formatted for chat."),
+    "btn:shot": ("Screenshot",
+                 "Copies a picture of this window to the clipboard."),
+    "btn:settings": ("Settings",
+                     "Game folder, window, sessions and hotkeys."),
+    "btn:about": ("About Wingbeat",
+                  "Version, what it does, links and folders."),
+    "btn:close": ("Quit", "Closes Wingbeat completely."),
+    "btn:stream": ("Streamer mode",
+                   "Bars only, on a chroma key background for OBS."),
+    "btn:stream_off": ("Leave streamer mode",
+                       "Brings back the tabs, buttons and footer."),
+    "btn:live": ("Back to live",
+                 "Leaves the saved session and shows current numbers again."),
+    "metric:damage": ("Damage", "Damage and DPS for everyone you can see."),
+    "metric:heal": ("Healing", "Healing done, split by skill."),
+    "metric:taken": ("Taken", "Damage taken, split by source."),
+    "metric:loot": ("Loot", "Items picked up during this session."),
+    "metric:sessions": ("Sessions", "Saved sessions. Click one to open it here."),
+    "col:dmg": ("Damage", "Total for the current count."),
+    "col:dps": ("DPS", "Sliding window; average once the fight is over."),
+    "col:pct": ("Share", "Share of everything shown in the table."),
+    "col:hits": ("Hits", "Damage lines counted, ticks included."),
+    "col:crit": ("Crit", "Share of hits that were critical."),
+}
+
+TOOLBAR_RIGHT = (("close", "Close"),)
 
 _ICON_CACHE: dict[tuple, object] = {}
 _ICON_EXT = (".png", ".gif", ".webp", ".dds", ".bmp", ".jpg")
@@ -276,6 +331,18 @@ def tab_icon(key: str, size: int, dpr: float, lit: bool):
     return pm
 
 
+def item_icon_named(label: str, size: int, dpr: float = 1.0):
+    """Иконка расходника по названию, с кэшем.
+
+    Кэш здесь обязателен: без него картинка перечитывалась с диска на
+    КАЖДОМ кадре раскрытой строки, то есть тридцать раз в секунду.
+    """
+    key = ("byname", label, size, round(dpr, 2))
+    if key not in _ICON_CACHE:
+        _ICON_CACHE[key] = _from_pack(assets.item_icon_by_name(label), size, dpr)
+    return _ICON_CACHE[key]
+
+
 def item_icon(item_id: str, size: int, dpr: float = 1.0):
     """Иконка предмета из ассет-пака по номеру."""
     if not item_id:
@@ -308,12 +375,14 @@ def make_icon() -> QIcon:
 
 
 class Overlay(QWidget):
-    def __init__(self, engine, cfg: dict, on_settings=None, on_quit=None):
+    def __init__(self, engine, cfg: dict, on_settings=None, on_quit=None,
+                 on_about=None):
         super().__init__(None)
         self.engine = engine
         self.cfg = cfg
         self.on_settings = on_settings
         self.on_quit = on_quit
+        self.on_about = on_about
         self.snapshot: dict = {"rows": [], "loot": {}, "total": 0, "duration": 0,
                                "metric": cfg.get("metric", "damage"), "stats": {}}
         self.selected = ""
@@ -327,23 +396,38 @@ class Overlay(QWidget):
         self._drag: QPoint | None = None
         self._resizing = False
         self._hot = ""
+        #: Прямоугольник элемента под курсором — над ним встаёт подсказка.
+        self._hot_rect: QRect | None = None
         self._hit: list[tuple[str, QRect]] = []
         self._row_rects: list[tuple[QRect, dict]] = []
         self._anim: dict[str, list[float]] = {}
         self._pulse = 0.0
         self.hotkeys: hk.HotkeyManager | None = None
+        #: Прочитанные с диска сессии и время чтения. Список обновляется
+        #: редко: файлы меняются только при «Очистить» и при выходе, а
+        #: перечитывать каталог четыре раза в секунду незачем.
+        self._sessions: list[dict] = []
+        self._sessions_at = 0.0
+        #: Последняя прочитанная сессия целиком: (путь, данные).
+        self._session_cache: tuple[str | None, dict | None] = (None, None)
+        #: Сессия, открытая в обычных вкладках. None — живые данные.
+        self._open_session: dict | None = None
+        #: Пока открыто окно настроек, метр не лезет наверх.
+        self._suspend_topmost = False
 
-        self.setWindowFlags(
-            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-            | Qt.Tool | Qt.WindowDoesNotAcceptFocus
-        )
+        # Флаг «поверх всех окон» ставится ПО НАСТРОЙКЕ, а не намертво.
+        # Раньше он был зашит здесь, и галочка в настройках ничего не
+        # меняла: окно висело сверху всегда, в том числе над собственным
+        # окном настроек.
+        self.setWindowFlags(self._flags())
         self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self.setWindowTitle("AionMeter")
+        self.setWindowTitle(APP_NAME)
         self.setMouseTracking(True)
 
         w = cfg["window"]
         self.setGeometry(w["x"], w["y"], w["w"], w["h"])
-        self.setMinimumSize(280, 140)
+        # Минимум считается ВНУТРИ _apply_font: он зависит от размеров
+        # шрифта и иконок, которых до этого вызова ещё не существует.
         self._apply_font()
         self._apply_translucency()
 
@@ -363,16 +447,24 @@ class Overlay(QWidget):
 
     # -- метрики: всё считается от высоты строки шрифта ---------------------
 
+    #: Запасные семейства, если выбранного в системе нет.
+    FONT_FALLBACK = ("Bahnschrift", "Segoe UI", "Tahoma", "Verdana", "Arial")
+
     def _apply_font(self) -> None:
         size = int(self.cfg.get("font_size", 12))
-        fam = "Segoe UI"
+        fam = self.cfg.get("font_family") or self.FONT_FALLBACK[0]
         self.f_body = QFont(fam, size)
+        for f in (self.f_body,):
+            f.setFamilies([fam, *self.FONT_FALLBACK])
         self.f_self = QFont(fam, size, QFont.DemiBold)
         self.f_tab = QFont(fam, size, QFont.DemiBold)
         self.f_num = QFont(fam, max(7, size - 1))
         self.f_small = QFont(fam, max(7, size - 3))
         self.f_caps = QFont(fam, max(6, size - 4), QFont.DemiBold)
         self.f_caps.setCapitalization(QFont.AllUppercase)
+        # Заголовок: чуть крупнее вкладок, с разрядкой между буквами.
+        self.f_title = QFont(fam, size + 1, QFont.DemiBold)
+        self.f_title.setLetterSpacing(QFont.PercentageSpacing, 108)
         # Полоска сводки: крупный жирный кегль, отдельный от таблицы.
         self.f_stat = QFont(fam, size + 3, QFont.Bold)
         self.f_stat_cap = QFont(fam, size, QFont.DemiBold)
@@ -404,10 +496,16 @@ class Overlay(QWidget):
         self.TAB_ICON = max(16, min(self.ICON, self.H + 6))
         self.GRIP = max(12, min(20, self.H - 4))
         self.HEAD_H = max(self.H + 14, self.TAB_ICON + 10)
+        # Полоса с логотипом и названием над вкладками. Высота от кегля,
+        # чтобы при крупном шрифте она не выглядела приплюснутой.
+        self.TITLE_ICON = max(14, min(28, self.H + 2))
+        self.TITLE_H = self.TITLE_ICON + 8
         # Панель действий: размер кнопки настраивается, потому что вкус на
         # «достаточно крупно» у всех разный, а места в оверлее мало.
         self.ACT = max(28, min(96, int(self.cfg.get("action_size", 48))))
-        self.ACT_H = self.ACT + 10 if self.cfg.get("show_actions", True) else 0
+        # Полоса кнопок есть всегда: без неё окно теряет старт, очистку и
+        # копирование в чат, а искать их в меню в бою никто не станет.
+        self.ACT_H = self.ACT + 10
         # Одна базовая линия на все три кегля в строке
         self.BASE = (self.ROW_H - self.RAIL - 2 + fm.ascent() - fm.descent()) // 2
         # Сводка меряется последней: её раскладка зависит от всех
@@ -415,6 +513,23 @@ class Overlay(QWidget):
         self._stats_w = None
         self._measure_stats(self.width())
         self._measure_columns()
+        self._apply_min_size()
+
+    #: Сколько строк таблицы обязано влезать при минимальном размере.
+    MIN_ROWS_VISIBLE = 3
+
+    def _apply_min_size(self) -> None:
+        """Минимум окна = обвязка плюс несколько строк.
+
+        Прежние 280x140 были меньше самой обвязки: при заводских размерах
+        она занимает 259 px, и в окне минимального размера таблицы не
+        оставалось вовсе — подвал рисовался поверх кнопок. Минимум обязан
+        ехать вместе с размером шрифта и иконок, поэтому считается здесь,
+        а не задаётся числом.
+        """
+        inset = self.frame_inset() * 2
+        h = self.chrome_h + self.MIN_ROWS_VISIBLE * self.ROW_H + inset
+        self.setMinimumSize(360, h)
 
     def resizeEvent(self, e) -> None:
         # Размер берём из события: self.width() внутри resizeEvent
@@ -449,8 +564,11 @@ class Overlay(QWidget):
         «Ste…», читать невозможно, а доля и удары — справочные величины.
         """
         wanted = self.cfg.get("columns", ["dmg", "dps", "pct"])
-        if self.cfg.get("metric") == "loot":
+        metric = self.cfg.get("metric")
+        if metric == "loot":
             wanted = LOOT_COLUMNS
+        elif metric == "sessions":
+            wanted = SESSION_COLUMNS
         active = [c for c in COL_ORDER if c in wanted and c in self._colw]
         if w is None:
             return [(c, self._colw[c]) for c in active]
@@ -476,7 +594,7 @@ class Overlay(QWidget):
 
     @property
     def chrome_h(self) -> int:
-        return (self.HEAD_H + self.ACT_H + self.STATS_H
+        return (self.TITLE_H + self.HEAD_H + self.ACT_H + self.STATS_H
                 + self.COL_H + 1 + 1 + self.foot_h)
 
     @property
@@ -526,19 +644,67 @@ class Overlay(QWidget):
         style = get(wintypes.HWND(self.hwnd), GWL_EXSTYLE)
         setl(wintypes.HWND(self.hwnd), GWL_EXSTYLE, (style | add) & ~remove)
 
+    def _flags(self):
+        flags = (Qt.FramelessWindowHint | Qt.Tool
+                 | Qt.WindowDoesNotAcceptFocus)
+        if self.cfg.get("always_on_top", True):
+            flags |= Qt.WindowStaysOnTopHint
+        return flags
+
     def apply_window_flags(self) -> None:
+        want = self._flags()
+        if self.windowFlags() != want:
+            # setWindowFlags прячет окно и сбрасывает расширенные стили,
+            # поэтому показываем заново и ставим стили после него.
+            visible = self.isVisible()
+            self.setWindowFlags(want)
+            if visible:
+                self.show()
         add = WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
         if self.cfg.get("click_through"):
             self._ex_style(add=add | WS_EX_TRANSPARENT)
         else:
             self._ex_style(add=add, remove=WS_EX_TRANSPARENT)
+        self._apply_topmost()
+
+    def _apply_topmost(self) -> None:
+        """Сказать Windows про порядок окон прямо сейчас.
+
+        Одного Qt-флага мало в обе стороны: игра сбрасывает чужой z-order
+        при переключении фокуса, а снятый флаг сам по себе не опускает
+        окно вниз — нужен явный HWND_NOTOPMOST.
+        """
+        if not IS_WINDOWS:
+            return
+        top = HWND_TOPMOST if self.cfg.get("always_on_top", True) else HWND_NOTOPMOST
+        ctypes.windll.user32.SetWindowPos(
+            wintypes.HWND(self.hwnd), wintypes.HWND(top),
+            0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
 
     def _keep_on_top(self) -> None:
+        # Подтверждаем позицию, только пока она включена: выключенную
+        # настройку таймер не должен возвращать обратно.
         if not IS_WINDOWS or not self.cfg.get("always_on_top", True):
             return
-        ctypes.windll.user32.SetWindowPos(
-            wintypes.HWND(self.hwnd), wintypes.HWND(HWND_TOPMOST),
-            0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        if self._suspend_topmost:
+            return
+        self._apply_topmost()
+
+    def suspend_topmost(self, on: bool) -> None:
+        """Отпустить верхний слой, пока открыто окно настроек.
+
+        Иначе таймер раз в две секунды поднимает метр обратно поверх
+        диалога, и человек настраивает вслепую.
+        """
+        self._suspend_topmost = on
+        if not IS_WINDOWS:
+            return
+        if on:
+            ctypes.windll.user32.SetWindowPos(
+                wintypes.HWND(self.hwnd), wintypes.HWND(HWND_NOTOPMOST),
+                0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        else:
+            self._apply_topmost()
 
     def setup_hotkeys(self) -> None:
         if not IS_WINDOWS:
@@ -552,6 +718,10 @@ class Overlay(QWidget):
         self.hotkeys.register(binds.get("hide", ""), self.action_toggle_hide)
         self.hotkeys.register(binds.get("copy", ""), self.action_copy)
         self.hotkeys.register(binds.get("pause", ""), self.action_toggle_pause)
+        # Выйти из режима стримера можно и с клавиатуры: кнопка в углу
+        # маленькая, а руки во время эфира заняты игрой.
+        self.hotkeys.register(binds.get("streamer", ""),
+                              self.action_toggle_streamer)
 
     def nativeEvent(self, event_type, message):
         if self.hotkeys is not None and event_type == b"windows_generic_MSG":
@@ -570,9 +740,15 @@ class Overlay(QWidget):
         self._refresh()
 
     def action_clear(self) -> None:
+        # «Очистить» относится к живому счёту, а не к просмотру прошлого:
+        # сначала возвращаемся из открытой сессии.
+        self.close_session_view()
+        # Кнопка закрывает сессию и кладёт её файлом на диск, поэтому
+        # список на вкладке сессий устарел ровно в этот момент.
         self.engine.reset()
         self.selected = ""
         self._anim.clear()
+        self._sessions_at = 0.0
         self._refresh()
 
     def action_toggle_click(self) -> None:
@@ -585,6 +761,8 @@ class Overlay(QWidget):
 
     def set_metric(self, metric: str) -> None:
         self.cfg["metric"] = metric
+        if metric == "sessions":
+            self._sessions_at = 0.0      # открыли вкладку — перечитать сразу
         self.selected = ""
         self._scroll = 0          # у новой вкладки своя длина списка
         self._colcache.clear()
@@ -661,9 +839,204 @@ class Overlay(QWidget):
 
     # -- данные и анимация --------------------------------------------------
 
+    #: Как часто перечитывать каталог сессий, пока вкладка открыта.
+    SESSIONS_TTL = 5.0
+
     def _refresh(self) -> None:
-        self.snapshot = self.engine.snapshot()
+        metric = self.cfg.get("metric")
+        if self._open_session and metric in self.SESSION_METRICS:
+            # На экране прошлое: живой движок продолжает считать в фоне,
+            # но показываем сохранённое.
+            self.snapshot = self._saved_snapshot(metric)
+            self.update()
+            return
+        snap = self.engine.snapshot()
+        if metric == "sessions":
+            snap = dict(snap)
+            snap.update(self._sessions_snapshot())
+        self.snapshot = snap
         self.update()
+
+    def open_session(self, path: str) -> None:
+        """Открыть сохранённую сессию в обычных вкладках.
+
+        Раньше клик по строке лишь раскрывал список участников — то есть
+        сессию можно было увидеть, но не РАЗОБРАТЬ: ни скиллов, ни хила,
+        ни полученного урона. Теперь метр переключается на неё целиком,
+        как на прошлый бой в чужих метрах, и живые данные при этом никуда
+        не деваются — они продолжают считаться в фоне.
+        """
+        data = self._session_full(path)
+        if not data:
+            return
+        self._open_session = data
+        self.selected = ""
+        self._scroll = 0
+        self._anim.clear()
+        # Уходим с вкладки списка на урон: смотреть сессию человек пришёл
+        # ради цифр, а не ради строки в перечне.
+        if self.cfg.get("metric") == "sessions":
+            self.cfg["metric"] = "damage"
+            self._colcache.clear()
+            self._measure_columns()
+        self._refresh()
+
+    def close_session_view(self) -> None:
+        """Вернуться к живым данным."""
+        if not self._open_session:
+            return
+        self._open_session = None
+        self.selected = ""
+        self._scroll = 0
+        self._anim.clear()
+        self._refresh()
+
+    #: Соответствие вкладки и раздела в файле сессии.
+    SESSION_METRICS = {"damage": "damage", "heal": "heal", "taken": "taken"}
+
+    def _saved_snapshot(self, metric: str) -> dict:
+        """Снимок из сохранённой сессии — в том же виде, что и живой."""
+        data = self._open_session or {}
+        rows_raw = data.get(self.SESSION_METRICS.get(metric, "damage"), [])
+        rows, total = [], sum(int(r.get("total", 0)) for r in rows_raw)
+        top = max((int(r.get("total", 0)) for r in rows_raw), default=0) or 1
+        boss = data.get("boss") or ""
+        for r in rows_raw:
+            hits = int(r.get("hits", 0))
+            crits = int(r.get("crits", 0))
+            name = r.get("name", "?")
+            targets = dict(r.get("targets") or [])
+            rows.append({
+                "name": name,
+                "display": name,
+                "cls": r.get("cls", ""),
+                "cls_name": skilldb.CLASSES.get(r.get("cls", ""), ""),
+                "section": "party",
+                "total": int(r.get("total", 0)),
+                # У сохранённой сессии «текущего» DPS быть не может — бой
+                # давно кончился. Показываем средний по активному времени:
+                # это единственная честная цифра для прошлого.
+                "dps": float(r.get("avg", 0.0)),
+                "avg": float(r.get("avg", 0.0)),
+                "hits": hits,
+                "crit": (100.0 * crits / hits) if hits else None,
+                "max": int(r.get("max", 0)),
+                "boss_total": int(targets.get(boss, 0)),
+                "boss_hits": 0,
+                "is_self": name == SELF,
+                "is_party": True,
+                "skills": [tuple(x) for x in (r.get("skills") or [])],
+                "buffs": [],
+            })
+        rows.sort(key=lambda r: (-r["total"], r["name"]))
+        for r in rows:
+            r["pct"] = 100.0 * r["total"] / (total or 1)
+            r["bar"] = r["total"] / top
+        limit = self.cfg.get("max_rows", 12)
+        dur = int(data.get("duration", 0))
+        return {
+            "rows": rows[:limit + 2],
+            "sections": [{"key": "all", "total": total or 1, "count": len(rows)}],
+            "split": False,
+            "hidden": max(0, len(rows) - limit),
+            "total": total,
+            "duration": dur,
+            "target": boss,
+            "boss": boss,
+            "boss_only": False,
+            "kills": int(data.get("kill_count", 0)),
+            "loot": dict(data.get("loot", {})),
+            "items": {},
+            "rolls": [],
+            "window": self.cfg.get("dps_window", 10),
+            "metric": metric,
+            "mode": "session",
+            "self_name": data.get("self_name", ""),
+            "party": list(data.get("party", [])),
+            "active": False,
+            "stats": {},
+            "error": "",
+            "paused": False,
+            # Метка для подвала: по ней видно, что на экране прошлое.
+            "saved_label": self._session_label(data),
+            "saved_path": data.get("path", ""),
+        }
+
+    def _sessions_snapshot(self) -> dict:
+        """Строки вкладки «Сессии» — из файлов, а не из памяти метра.
+
+        Одна строка — одна закрытая сессия; раскрытие показывает её состав
+        по игрокам, тем же механизмом, что и разбор по скиллам.
+        """
+        now = time.monotonic()
+        if now - self._sessions_at > self.SESSIONS_TTL:
+            self._sessions = sessmod.listing()
+            self._sessions_at = now
+
+        rows = []
+        top = max((d.get("total", 0) for d in self._sessions), default=0) or 1
+        for data in self._sessions:
+            you = data.get("you", {}) or {}
+            total = int(data.get("total", 0))
+            # Состав по игрокам лежит в полном файле, а он тяжёлый. Читаем
+            # его только для РАСКРЫТОЙ строки: список на экране обновляется
+            # постоянно, и тянуть ради него сотни килобайт на каждую сессию
+            # значило подвешивать окно на секунды.
+            players, classes = [], {}
+            rows.append({
+                "name": data.get("path", ""),
+                "display": self._session_label(data),
+                "cls": data.get("self_class", ""),
+                "cls_name": skilldb.CLASSES.get(data.get("self_class", ""), ""),
+                "section": "party",
+                "total": total,
+                # DPS сессии — свой средний, а не общий по всем: сравнивать
+                # свои заходы между собой человек будет именно по нему.
+                "dps": float(you.get("avg", 0.0)),
+                "avg": float(you.get("avg", 0.0)),
+                "hits": int(data.get("kill_count", 0)),
+                "crit": None,
+                "max": 0,
+                "pct": 100.0 * you.get("total", 0) / total if total else 0.0,
+                "bar": total / top,
+                "is_self": False,
+                "is_party": False,
+                "skills": players,
+                "classes": classes,
+                "buffs": [],
+                "session": data,
+            })
+        return {
+            "rows": rows,
+            "sections": [{"key": "all", "total": sum(r["total"] for r in rows),
+                          "count": len(rows)}],
+            "split": False,
+            "hidden": 0,
+            "total": sum(r["total"] for r in rows),
+            "metric": "sessions",
+        }
+
+    def _session_full(self, path: str) -> dict | None:
+        """Полная сессия с диска, с памятью на одну последнюю.
+
+        Больше одной держать незачем: раскрыта всегда одна строка, а файл
+        занимает сотни килобайт.
+        """
+        if not path:
+            return None
+        if getattr(self, "_session_cache", (None, None))[0] != path:
+            self._session_cache = (path, sessmod.load(path))
+        return self._session_cache[1]
+
+    def _session_label(self, data: dict) -> str:
+        """Подпись сессии: когда была, сколько длилась, по кому били."""
+        start = int(data.get("start", 0))
+        when = time.strftime("%d.%m %H:%M", time.localtime(start)) if start else "—"
+        dur = int(data.get("duration", 0))
+        span = (f"{dur // 3600}:{dur // 60 % 60:02d}:{dur % 60:02d}" if dur >= 3600
+                else f"{dur // 60}:{dur % 60:02d}")
+        boss = data.get("boss") or ""
+        return f"{when} · {span}" + (f" · {boss}" if boss else "")
 
     def _tick_anim(self) -> None:
         """Догоняем целевые длины рельса и нити.
@@ -760,6 +1133,19 @@ class Overlay(QWidget):
         self._row_rects = []
         snap_ = self.snapshot
 
+        if self.cfg.get("streamer"):
+            if inset:
+                p.translate(-inset, -inset)
+            self._paint_streamer(p, full_w, full_h, snap_, dpr)
+            return
+
+        # Заголовок с логотипом занимает свою полосу сверху, а всё
+        # остальное живёт ниже. Сдвигаем систему координат один раз, а не
+        # правим полтора десятка смещений по всему файлу.
+        self._paint_title(p, w, dpr)
+        p.translate(0, self.TITLE_H)
+        h -= self.TITLE_H
+
         self._paint_head(p, w, snap_, dpr)
         if self.ACT_H:
             self._paint_actions(p, w, snap_)
@@ -771,6 +1157,12 @@ class Overlay(QWidget):
         bottom = h - self.foot_h - 1
         rows = [r for r in snap_.get("rows", ()) if r["name"] not in NO_OWNER]
         dot = next((r for r in snap_.get("rows", ()) if r["name"] in NO_OWNER), None)
+
+        # Подложка рисуется под таблицей в любом случае — меняется только
+        # сила вуали. Вкладка сессий и добычи её тоже получает: там своя
+        # картина, но пустое поле выглядит одинаково голым везде.
+        self._paint_idle_art(p, w, top, bottom, dpr,
+                             busy=bool(rows or dot is not None))
 
         if not rows and dot is None:
             self._paint_empty(p, w, top, bottom, snap_)
@@ -807,6 +1199,9 @@ class Overlay(QWidget):
 
         if self.foot_h:
             self._paint_footer(p, w, h, snap_, dpr)
+        # Подсказка рисуется последней: она всплывает над всем остальным.
+        self._paint_hint(p, w, h, dpr)
+        p.translate(0, -self.TITLE_H)
         if inset:
             p.translate(-inset, -inset)
         if inset:
@@ -828,6 +1223,128 @@ class Overlay(QWidget):
         self._paint_grip(p, full_w, full_h)
 
     # -- шапка --------------------------------------------------------------
+
+    def _paint_title(self, p: QPainter, w: int, dpr: float) -> None:
+        """Логотип и название над вкладками.
+
+        Зачем это в окне, где каждый пиксель на счету: метр висит поверх
+        игры, его скриншотят и кидают в чат, и по картинке должно быть
+        видно, чем она снята. Полоса низкая, текста в ней ровно одно слово.
+        """
+        p.fillRect(QRect(0, 0, w, self.TITLE_H), self._bg(L2, chrome=True))
+        hdr = header_pixmap() if self.cfg.get("art_panel", True) else None
+        if hdr is not None:
+            p.drawPixmap(QRect(0, 0, w, self.TITLE_H), hdr)
+
+        size = self.TITLE_ICON
+        y = (self.TITLE_H - size) // 2
+        fm = QFontMetrics(self.f_title)
+        base = (self.TITLE_H + fm.ascent() - fm.descent()) // 2
+
+        # Значок и название стоят у левого края, как в заголовке любого
+        # окна. Центрирование пробовали — по центру полоса начинает спорить
+        # с вкладками под ней за внимание.
+        x = PAD
+
+        icon = art_pixmap("appicon")
+        if icon is not None:
+            scaled = icon.scaled(int(size * dpr), int(size * dpr),
+                                 Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            scaled.setDevicePixelRatio(dpr)
+            p.drawPixmap(x, y, scaled)
+        else:
+            # Пака нет — рисуем крыло вектором, чтобы полоса не пустовала.
+            self._shape(p, "wing", QRect(x, y, size, size), GOLD, size / 19.0)
+        x += size + GAP
+        self._txt(p, x, base, APP_NAME, INK, self.f_title)
+
+        # Своей зоны перетаскивания полосе не нужно: окно и так тянется за
+        # любое место, где нет кнопки, а лишняя запись в списке зон
+        # перехватывала клики по вкладкам — они лежат ровно под ней.
+        p.fillRect(QRectF(0, self.TITLE_H - 1, w, 1), RULE)
+
+    def action_toggle_streamer(self) -> None:
+        """Включить или выключить режим стримера."""
+        on = not self.cfg.get("streamer")
+        self.cfg["streamer"] = on
+        if on:
+            # Клик-сквозь пришлось бы отключить всё равно: в этом режиме
+            # единственный способ выйти — кнопка в углу окна.
+            self._pre_stream = {
+                "click_through": self.cfg.get("click_through", False),
+                "transparent": self.cfg.get("transparent", False),
+            }
+            self.cfg["click_through"] = False
+            self.cfg["transparent"] = False
+        else:
+            self.cfg.update(getattr(self, "_pre_stream", {}) or {})
+            self._pre_stream = {}
+        self.selected = ""
+        self.apply_appearance()
+        self._refresh()
+
+    def _chroma(self) -> QColor:
+        colour = QColor(self.cfg.get("chroma_color") or "#00B140")
+        return colour if colour.isValid() else QColor("#00B140")
+
+    #: Высота строки в режиме стримера: плотнее обычной, потому что вокруг
+    #: неё нет ни шапки, ни подвала, и место тратить не на что.
+    STREAM_ROW_GAP = 2
+
+    def _paint_streamer(self, p: QPainter, w: int, h: int, snap_: dict,
+                        dpr: float) -> None:
+        """Только полосы урона на однотонном фоне.
+
+        Фон вырезается хромакеем в OBS, поэтому под строками не должно
+        быть ни рамки, ни фактуры, ни подложки — иначе всё это окажется
+        в кадре. По той же причине текст рисуется с тенью: на зелёном
+        белые буквы без обводки расплываются после кеинга.
+        """
+        p.fillRect(QRect(0, 0, w, h), self._chroma())
+
+        rows = [r for r in snap_.get("rows", ()) if r["name"] not in NO_OWNER]
+        step = self.ROW_H + self.STREAM_ROW_GAP
+        # Кнопка выхода: маленькая, в правом верхнем углу. Без неё из
+        # режима было бы не выбраться — ни вкладок, ни панели тут нет.
+        size = max(16, self.H)
+        exit_rect = QRect(w - size - 4, 4, size, size)
+        self._hit.append(("btn:stream_off", exit_rect))
+
+        top = 0 if not rows else 2
+        y = top
+        limit = max(1, (h - top) // step)
+        for i, r in enumerate(rows[:limit]):
+            # Тёмная подложка под КАЖДОЙ строкой. Без неё цифры справа
+            # оказываются прямо на зелёном: после кеинга они частично
+            # выедаются по краям и читаются плохо. С подложкой в кадр
+            # попадают аккуратные строки, а всё вокруг остаётся прозрачным.
+            p.fillRect(QRect(0, y, w, self.ROW_H), self._bg(L1))
+            self._paint_row(p, i + 1, r, y, w, dpr)
+            self._row_rects.append((QRect(0, y, w, self.ROW_H), r))
+            y += step
+
+        if not rows:
+            # Пустой хромакей выглядит как сломавшаяся программа. Одна
+            # строка подписи — и понятно, что метр жив и ждёт боя.
+            p.fillRect(QRect(0, 0, w, self.ROW_H), self._bg(L1))
+            p.setFont(self.f_small)
+            p.setPen(INK3)
+            p.drawText(QRect(PAD, 0, w - 2 * PAD - size, self.ROW_H),
+                       Qt.AlignLeft | Qt.AlignVCenter,
+                       f"{APP_NAME} — waiting for combat")
+
+        hot = self._hot == "btn:stream_off"
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(0, 0, 0, 150 if hot else 90))
+        p.drawRoundedRect(exit_rect, 3, 3)
+        pen = QPen(QColor(255, 255, 255, 235 if hot else 170), 1.6)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        m = size // 3
+        p.drawLine(exit_rect.left() + m, exit_rect.top() + m,
+                   exit_rect.right() - m, exit_rect.bottom() - m)
+        p.drawLine(exit_rect.right() - m, exit_rect.top() + m,
+                   exit_rect.left() + m, exit_rect.bottom() - m)
 
     def _tab_edge(self) -> int:
         """Ширина золотого завитка на торце плашки вкладки, в пикселях окна.
@@ -884,6 +1401,11 @@ class Overlay(QWidget):
         for key, label in METRIC_TABS:
             tw = fm.horizontalAdvance(label) if show_text else 0
             bw = icon_w + (gaps + tw if show_text else 0) + 2 * edge
+            if x + bw > PAD + avail:
+                # Полоса кончилась. Рисовать поверх кнопок нельзя: их
+                # прямоугольники кладутся в список зон ПОСЛЕ вкладок, и
+                # клик по крестику попадал бы во вкладку под ним.
+                break
             rect = QRect(x, 3, bw, self.HEAD_H - 6)
             self._hit.append((f"metric:{key}", rect))
             active = key == cur
@@ -997,14 +1519,17 @@ class Overlay(QWidget):
             self._hit.append((f"btn:{name}", rect))
             hot = self._hot == f"btn:{name}"
             paused = bool(snap_.get("paused"))
-            self._texture(p, rect, hot=hot,
-                          lit=(name == "play" and paused))
-            # Пауза — единственное состояние, у которого свой цвет: акцент
-            # говорит «нажми, чтобы начать», и в общем золоте он бы пропал.
-            colour = ACCENT if (name == "play" and paused) else (
-                GOLD if hot else GOLD_DIM)
+            # Включённый фильтр по боссу — такое же состояние, как пауза:
+            # человек должен видеть, что цифры в таблице урезаны, не
+            # открывая меню и не сравнивая их с памятью.
+            on = (name == "play" and paused) or (
+                name == "boss" and bool(self.cfg.get("boss_only")))
+            self._texture(p, rect, hot=hot, lit=on)
+            # Активное состояние — единственное, у которого свой цвет:
+            # акцент говорит «сейчас включено», и в общем золоте он бы пропал.
+            colour = ACCENT if on else (GOLD if hot else GOLD_DIM)
             glyph = QRect(rect.x(), rect.y(), rect.width(), rect.height())
-            if name in ("settings", "shot"):
+            if name in ("settings", "shot", "boss", "about", "stream"):
                 self._shape(p, name, glyph, colour, size / 27.5)
             else:
                 self._big_action(p, name, glyph, colour, paused, size / 27.5)
@@ -1169,6 +1694,74 @@ class Overlay(QWidget):
             p.drawRoundedRect(rf(-2.6, -2.6, 2.6, 3.4), 0.8 * k, 0.8 * k)
             p.setBrush(dark)
             p.drawEllipse(rf(-1.1, -1.0, 1.1, 1.2))
+        elif name == "stream":
+            # Экран и две дуги вещания. Камера уже занята снимком окна,
+            # и две камеры рядом путали бы.
+            p.drawRoundedRect(rf(-10.4, -7.6, 10.4, 5.6), 1.6 * k, 1.6 * k)
+            p.setBrush(dark)
+            p.drawRoundedRect(rf(-8.4, -5.6, 8.4, 3.6), 1.0 * k, 1.0 * k)
+            p.setBrush(body())
+            p.drawRect(rf(-4.6, 5.6, 4.6, 7.2))
+            p.drawRoundedRect(rf(-7.4, 7.2, 7.4, 9.4), 1.0 * k, 1.0 * k)
+            pen = QPen(colour, max(1.0, 1.7 * k))
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            for r0 in (3.2, 5.8):
+                p.drawArc(rf(-r0, -r0 - 1.0, r0, r0 - 1.0).toRect(), 40 * 16, 100 * 16)
+            p.setPen(Qt.NoPen)
+            p.setBrush(body())
+        elif name == "about":
+            # Кольцо и буква «i». Знак вопроса читался как «помощь по
+            # игре», а тут именно сведения о программе.
+            r, th = 10.2, 2.1
+            path = QPainterPath()
+            path.addEllipse(rf(-r, -r, r, r))
+            path.addEllipse(rf(-r + th, -r + th, r - th, r - th))
+            p.drawPath(path)
+            p.drawEllipse(rf(-1.5, -6.2, 1.5, -3.2))
+            p.drawRoundedRect(rf(-1.5, -1.4, 1.5, 6.6), 0.8 * k, 0.8 * k)
+        elif name == "boss":
+            # Мишень: два кольца и точка. Череп читался как «убить», а нам
+            # нужно «считать только эту цель».
+            for r, th in ((9.6, 2.2), (5.2, 2.0)):
+                path = QPainterPath()
+                path.addEllipse(rf(-r, -r, r, r))
+                path.addEllipse(rf(-r + th, -r + th, r - th, r - th))
+                p.drawPath(path)
+            p.drawEllipse(rf(-1.9, -1.9, 1.9, 1.9))
+            for dx, dy in ((0, -12.6), (0, 12.6), (-12.6, 0), (12.6, 0)):
+                p.drawRect(rf(dx - 0.9 if dx else -0.9, dy - 2.4 if dy else -0.9,
+                              dx + 0.9 if dx else 0.9, dy + 2.4 if dy else 0.9))
+        elif name == "wing":
+            # Три пера веером и импульс под ними: тот же смысл, что у
+            # логотипа, но в силуэте, который читается на 14 пикселях.
+            for i, (dx, dy, ln) in enumerate(((-1.5, -8.4, 9.2),
+                                              (-4.0, -5.0, 11.4),
+                                              (-6.2, -1.4, 12.6))):
+                path = QPainterPath()
+                path.moveTo(pf(dx, dy))
+                path.quadTo(pf(dx + ln * 0.55, dy + 1.6),
+                            pf(dx + ln, dy + 5.0))
+                path.quadTo(pf(dx + ln * 0.5, dy + 4.2),
+                            pf(dx, dy + 3.4))
+                path.closeSubpath()
+                p.drawPath(path)
+            p.setBrush(QColor(111, 216, 255))
+            p.drawRect(rf(-7.0, 6.6, 6.4, 8.0))
+        elif name == "scroll":
+            # Свиток: журнал прошлых заходов. Взят вместо часов и календаря
+            # намеренно — часы читаются как «таймер», календарь как «дата»,
+            # а нужен именно список записей.
+            p.drawRoundedRect(rf(-7.2, -8.6, 7.2, 8.6), 1.4 * k, 1.4 * k)
+            p.setBrush(QColor(colour).darker(150))
+            for i in range(3):                       # строки записей
+                top = -4.6 + i * 3.6
+                p.drawRoundedRect(rf(-4.4, top, 4.4, top + 1.5), 0.7 * k, 0.7 * k)
+            p.setBrush(body())
+            # Валики сверху и снизу: без них прямоугольник читается как лист.
+            p.drawRoundedRect(rf(-9.2, -10.4, 9.2, -7.8), 1.3 * k, 1.3 * k)
+            p.drawRoundedRect(rf(-9.2, 7.8, 9.2, 10.4), 1.3 * k, 1.3 * k)
         elif name == "play":
             path = QPainterPath()
             path.moveTo(pf(-6.6, -10.2))
@@ -1313,7 +1906,8 @@ class Overlay(QWidget):
                 p.drawEllipse(QRect(x + 2, y + (row_h - icon) // 2 + 2,
                                     icon - 4, icon - 4))
             x += icon + GAP
-            self._txt(p, x, base, label, INK2, self.f_stat_cap)
+            if getattr(self, "_stats_labels", True):
+                self._txt(p, x, base, label, INK2, self.f_stat_cap)
             mant, suf = fmt_ui(value)
             right = x0 + col_w - (PAD if col == cols - 1 else GROUP)
             if suf:
@@ -1324,18 +1918,15 @@ class Overlay(QWidget):
         p.fillRect(QRectF(0, top + self.STATS_H - 1, w, 1), RULE)
 
     def _measure_stats(self, w: int) -> None:
-        # Ширина не изменилась — считать нечего.
-        if getattr(self, "_stats_w", None) == w:
-            return
-        self._stats_w = w
         """Высота полоски сводки зависит от того, в сколько столбцов она легла.
 
         Считается от ширины окна, поэтому пересчитывается при каждом
         изменении размера, а не один раз вместе со шрифтами.
         """
-        if not self.cfg.get("show_stats_strip", True):
-            self.STATS_H = 0
+        # Ширина не изменилась — считать нечего.
+        if getattr(self, "_stats_w", None) == w:
             return
+        self._stats_w = w
         row_h = self.ICON + 6
         wide = self._stats_cols(max(1, w))
         # Высота окна тоже голосует: если после сводки таблице остаётся
@@ -1344,10 +1935,20 @@ class Overlay(QWidget):
         other = (self.HEAD_H + self.ACT_H + self.COL_H + 1 + 1
                  + self.foot_h + 2 * self.frame_inset())
         free = max(0, self.height() - other)
+        min_cell = self._stats_min_cell()
         for cols in range(wide, min(len(STATS_ROWS), 3) + 1):
             lines = -(-len(STATS_ROWS) // cols)
+            if cols > 1 and (w - PAD) // cols < min_cell:
+                # Дальше уплотнять нельзя: число полезет на иконку.
+                cols -= 1
+                lines = -(-len(STATS_ROWS) // cols)
+                break
             if free - row_h * lines >= self.MIN_TABLE_ROWS * self.ROW_H:
                 break
+        # Подписи рисуем, только если они реально влезают в ячейку. Раньше
+        # проверки не было вовсе, и при трёх столбцах в 400 px «XP» ложился
+        # поверх «123.5k», а «Glory Points» обрезался на середине.
+        self._stats_labels = self._stats_fits(w, cols)
         self._stats_cols_now = cols
         self.STATS_H = row_h * lines
 
@@ -1369,7 +1970,33 @@ class Overlay(QWidget):
         label_w = max(cap.horizontalAdvance(lbl) for _k, lbl, _s in STATS_ROWS)
         need = (self.STATS_ICON + GAP + label_w + GROUP
                 + num.horizontalAdvance("888,8") + cap.horizontalAdvance("M"))
+        self._stats_need = need
         return 2 if w >= need * 2 + PAD * 2 + GROUP else 1
+
+    def _stats_fits(self, w: int, cols: int) -> bool:
+        """Влезает ли в ячейку СТРОКА С ПОДПИСЬЮ при таком числе столбцов.
+
+        Проверка ширины была только для двух столбцов, а на три раскладка
+        переходила по одной высоте. При 400 px ячейка выходила 130 px, и
+        подписи ложились поверх чисел: «XP» на «123.5k», «Glory Points»
+        обрезался на середине. Если не влезает — полоска рисуется без
+        подписей: значок и число узнаются и без слов, а наложение нет.
+        """
+        if not getattr(self, "_stats_need", 0):
+            self._stats_cols(w)
+        return (w - PAD) // max(1, cols) >= self._stats_need
+
+    def _stats_min_cell(self) -> int:
+        """Ширина ячейки, ниже которой число ляжет на иконку.
+
+        Подпись можно спрятать, а иконку и число — нет: при крупных
+        иконках (64 px) и трёх столбцах число печаталось прямо поверх
+        значка, и прочитать было нельзя ни то, ни другое.
+        """
+        num = QFontMetrics(self.f_stat)
+        cap = QFontMetrics(self.f_stat_cap)
+        return (self.STATS_ICON + GAP + num.horizontalAdvance("888,8")
+                + cap.horizontalAdvance("M") + GAP)
 
     def _paint_colheads(self, p: QPainter, w: int) -> None:
         top = self.HEAD_H + self.ACT_H + self.STATS_H
@@ -1500,8 +2127,9 @@ class Overlay(QWidget):
         # ничего не стоит, потому что ниже рисуются только видимые строки,
         # а высота считается арифметикой — цена кадра не зависит от длины.
         loot_mode = self.cfg.get("metric") == "loot"
+        sess_mode = self.cfg.get("metric") == "sessions"
         items = list(r.get("skills") or [])
-        if not loot_mode:
+        if not loot_mode and not sess_mode:
             auto = max(0, r["total"] - sum(v for _k, v in items))
             if auto > 0:
                 items.append((AUTOATTACK, auto))
@@ -1535,6 +2163,12 @@ class Overlay(QWidget):
             xi = x0 + 4
             if loot_mode:
                 icon = item_icon((r.get("ids") or {}).get(label, ""), size, dpr)
+            elif sess_mode:
+                # В сессии раскрываются участники, а не скиллы: значок —
+                # эмблема класса того, кто в строке.
+                icon = class_icon(cfgmod.icons_dir(self.cfg),
+                                  (r.get("classes") or {}).get(label, ""),
+                                  size, dpr)
             elif label == AUTOATTACK:
                 # У автоатаки имени скилла в логе нет вовсе, поэтому искать
                 # её среди иконок скиллов бессмысленно — берём отдельную.
@@ -1633,7 +2267,7 @@ class Overlay(QWidget):
                              step - 1), wash)
             xi = x0 + 4
             icon = (skill_icon(cfgmod.skill_icons_dir(self.cfg), label, size, dpr)
-                    or _from_pack(assets.item_icon_by_name(label), size, dpr))
+                    or item_icon_named(label, size, dpr))
             if icon is not None:
                 p.drawPixmap(xi, yy + (step - size) // 2, icon)
             else:
@@ -1652,14 +2286,122 @@ class Overlay(QWidget):
 
     # -- пусто и подвал -----------------------------------------------------
 
+    #: Насколько гасить подложку. Пока таблица пуста, картинку видно;
+    #: как только пошли цифры, она уходит почти в фон — но НЕ исчезает:
+    #: пропадающая на первом же ударе картинка выглядит поломкой.
+    BACKDROP_VEIL_IDLE = 0.62
+    BACKDROP_VEIL_BUSY = 0.86
+    def _paint_idle_art(self, p: QPainter, w: int, top: int, bottom: int,
+                        dpr: float, busy: bool = False) -> None:
+        """Подложка таблицы: пейзаж под вуалью.
+
+        Рисуется ВСЕГДА, а не только на пустой таблице. Разница лишь в
+        силе вуали: в бою она гуще, чтобы цифры читались, но картинка
+        остаётся на месте — иначе окно на первом же ударе будто меняет
+        оформление.
+
+        Персонажа здесь больше нет: вырезанный из игры силуэт поверх
+        пейзажа выглядел наклейкой, а не оформлением. Пейзаж под вуалью
+        работает фоном и не спорит ни с цифрами, ни с названием.
+        """
+        space_h = bottom - top
+        space_w = w - 2 * PAD
+        if space_h < 80 or space_w < 80:
+            return                      # в узкую щель картинку не втискиваем
+
+        # Пейзаж за спиной. Заполняет область целиком с обрезкой по краям,
+        # а не вписывается: поля вокруг фона выглядели бы дырой. Сверху
+        # кладём тёмную вуаль — без неё текст статуса и полосы таблицы
+        # тонут в листве, а метр должен оставаться читаемым в первую очередь.
+        back = art_pixmap("idle-bg")
+        if back is not None and not back.isNull():
+            scale = max(w / back.width(), space_h / back.height())
+            bw, bh = max(1, int(back.width() * scale)), max(1, int(back.height() * scale))
+            scaled_bg = back.scaled(int(bw * dpr), int(bh * dpr),
+                                    Qt.KeepAspectRatioByExpanding,
+                                    Qt.SmoothTransformation)
+            scaled_bg.setDevicePixelRatio(dpr)
+            p.save()
+            p.setClipRect(QRect(0, top, w, space_h))
+            p.drawPixmap((w - bw) // 2, top + (space_h - bh) // 2, scaled_bg)
+            veil = QColor(L1)
+            veil.setAlphaF(self.BACKDROP_VEIL_BUSY if busy
+                           else self.BACKDROP_VEIL_IDLE)
+            p.fillRect(QRect(0, top, w, space_h), veil)
+            # Мягкое затухание к верхней кромке: резкий стык с заголовками
+            # колонок читался как чужая картинка, вставленная поверх окна.
+            grad = QLinearGradient(0, top, 0, top + min(60, space_h // 3))
+            grad.setColorAt(0.0, self._bg(L1))
+            fade = QColor(L1)
+            fade.setAlpha(0)
+            grad.setColorAt(1.0, fade)
+            p.fillRect(QRect(0, top, w, min(60, space_h // 3)), grad)
+            p.restore()
+
+
     def _paint_empty(self, p: QPainter, w: int, top: int, bottom: int,
                      snap_: dict) -> None:
-        msg = snap_.get("error") or ("paused — press Start"
-                                     if snap_.get("paused") else "waiting for combat…")
+        if self.cfg.get("metric") == "sessions":
+            msg = ("No saved sessions yet.\n"
+                   "A session starts with the first hit and is saved when you "
+                   "press Reset or close the meter.")
+        elif snap_.get("error"):
+            msg = snap_["error"]
+        elif snap_.get("boss_only") and not snap_.get("boss"):
+            msg = "boss filter is on, but no main target yet"
+        elif snap_.get("waiting"):
+            msg = ("Waiting for Chat.log to appear.\n"
+                   "Log in to the game — the file is created on login.")
+        elif snap_.get("paused"):
+            msg = "paused — press Start"
+        else:
+            msg = "waiting for combat…"
+            age = snap_.get("log_age", -1)
+            read = (snap_.get("stats") or {}).get("read", 0)
+            # Файл, который не менялся часами, при нуле прочитанных строк
+            # — это не «затишье в бою», а выключенный чат-лог или чужой
+            # файл. Молчать об этом нельзя: картинка та же самая.
+            if not read and age > 600:
+                mins = int(age // 60)
+                span = f"{mins // 60} h" if mins >= 120 else f"{mins} min"
+                msg = (f"Chat.log has not changed for {span}.\n"
+                       "Is the chat log turned on in the game launcher?")
         p.setFont(self.f_small)
         p.setPen(DANGER if snap_.get("error") else INK3)
-        p.drawText(QRect(PAD * 2, top + 14, w - PAD * 4, 60),
+        # Строка состояния держится у верхней кромки: ниже стоит название,
+        # а ещё ниже — персонаж, и по центру они спорили бы друг с другом.
+        p.drawText(QRect(PAD * 2, top + 10, w - PAD * 4, max(48, (bottom - top) // 3)),
                    Qt.AlignHCenter | Qt.TextWordWrap, msg)
+        self._paint_wordmark(p, w, top, bottom)
+
+    #: Подпись под названием в пустом окне. Метр рассчитан на английский
+    #: клиент Origin, и честнее сказать это прямо, чем оставлять человека
+    #: выяснять на своём сервере, почему таблица пустая.
+    TAGLINE = "specially for Aion Origin"
+
+    def _paint_wordmark(self, p: QPainter, w: int, top: int, bottom: int) -> None:
+        """Название по центру пустой таблицы."""
+        space = bottom - top
+        if space < 120 or w < 220:
+            return                       # в тесном окне место дороже
+        big = QFont(self.f_title)
+        big.setPointSize(max(13, self.f_title.pointSize() + 7))
+        big.setWeight(QFont.Bold)
+        big.setLetterSpacing(QFont.PercentageSpacing, 118)
+        fm = QFontMetrics(big)
+        fm_small = QFontMetrics(self.f_small)
+        block = fm.height() + fm_small.height() + 4
+        y = top + (space - block) // 2 + fm.ascent()
+
+        name_w = fm.horizontalAdvance(APP_NAME)
+        p.setFont(big)
+        p.setPen(QColor(GOLD_DIM))
+        p.drawText((w - name_w) // 2, y, APP_NAME)
+
+        tag_w = fm_small.horizontalAdvance(self.TAGLINE)
+        p.setFont(self.f_small)
+        p.setPen(INK3)
+        p.drawText((w - tag_w) // 2, y + fm_small.height() + 2, self.TAGLINE)
 
     def _paint_footer(self, p: QPainter, w: int, h: int, snap_: dict,
                       dpr: float) -> None:
@@ -1692,6 +2434,36 @@ class Overlay(QWidget):
         self._txt(p, x, base, left, INK2, self.f_small)
         x += fm.horizontalAdvance(left) + GROUP
 
+        # Открытая сессия обязана быть подписана: без этого человек через
+        # минуту забудет, что смотрит прошлое, и решит, что метр перестал
+        # считать. Рядом — выход обратно к живым данным.
+        label = snap_.get("saved_label")
+        if label:
+            tag = fm.elidedText(label, Qt.ElideRight, max(80, int(w * 0.34)))
+            self._txt(p, x, base, tag, ACCENT, self.f_small)
+            x += fm.horizontalAdvance(tag) + GAP
+            close = "×  live"
+            cw = fm.horizontalAdvance(close)
+            rect = QRect(x - 2, top + 2, cw + 6, self.FOOT_H - 4)
+            self._hit.append(("btn:live", rect))
+            hot = self._hot == "btn:live"
+            self._txt(p, x, base, close, INK if hot else INK3, self.f_small)
+            x += cw + GROUP
+
+        # Включённый фильтр обязан быть виден в самом окне: иначе цифры
+        # вдвое ниже привычных выглядят как поломка счётчика, а не как
+        # «показан только босс». Имя цели тут же отвечает, кто такой босс.
+        if snap_.get("boss_only") and snap_.get("boss"):
+            # Если цель добили, показываем ещё и за сколько: скорость
+            # убийства — то, чем меряются между собой, а из таблицы урона
+            # её не видно.
+            secs = snap_.get("boss_seconds")
+            speed = f" · {secs // 60}:{secs % 60:02d}" if secs else ""
+            tag = fm.elidedText(f"boss: {snap_['boss']}{speed}", Qt.ElideRight,
+                                max(60, int(w * 0.42)))
+            self._txt(p, x, base, tag, ACCENT, self.f_small)
+            x += fm.horizontalAdvance(tag) + GROUP
+
         loot = snap_.get("loot", {})
         slots = []
         # Опыт и кинах уехали в полоску под кнопками — в подвале они бы
@@ -1718,6 +2490,17 @@ class Overlay(QWidget):
             x += fm.horizontalAdvance(label + " ")
             self._txt(p, x, base, value, INK2, self.f_small)
             x += fm.horizontalAdvance(value) + GROUP
+
+        # Версия по центру подвала. Рисуем ДО итога, но проверяем, что
+        # она не налезает ни на левую группу, ни на правую: в узком окне
+        # лучше её не показать, чем положить поверх цифр.
+        ver = version_display()
+        fm_v = QFontMetrics(self.f_small)
+        ver_w = fm_v.horizontalAdvance(ver)
+        ver_x = (w - ver_w) // 2
+        right_edge = w - PAD - self.grip_reserve() - total_w
+        if ver_x > x + GROUP and ver_x + ver_w < right_edge - GROUP:
+            self._txt(p, ver_x, base, ver, INK_MUTE, self.f_small)
 
         right = w - PAD - self.grip_reserve()
         if total_txt[1]:
@@ -1813,8 +2596,15 @@ class Overlay(QWidget):
         от окна — без поправки клики промахивались бы ровно на эту величину.
         """
         point = pos.toPoint() if hasattr(pos, "toPoint") else pos
+        if self.cfg.get("streamer"):
+            # В режиме стримера ни рамки, ни полосы заголовка нет, и
+            # поправлять координаты не на что.
+            return point
         inset = self.frame_inset()
-        return point - QPoint(inset, inset) if inset else point
+        # По вертикали вычитаем ещё и полосу заголовка: содержимое ниже неё,
+        # а координаты кликов приходят от окна. Без этой поправки все
+        # кнопки и вкладки промахивались бы ровно на её высоту.
+        return point - QPoint(inset, inset + self.TITLE_H)
 
     def _hit_at(self, pos) -> str:
         point = self._inset_point(pos)
@@ -1855,6 +2645,11 @@ class Overlay(QWidget):
             return
         row = self._row_at(e.position())
         if row is not None:
+            if self.cfg.get("metric") == "sessions":
+                # Строка сессии — не раскрывающийся список, а ссылка:
+                # метр переключается на неё целиком.
+                self.open_session(row["name"])
+                return
             self.selected = "" if self.selected == row["name"] else row["name"]
             self.update()
             return
@@ -1877,19 +2672,96 @@ class Overlay(QWidget):
             "copy": self.action_copy,
             "shot": self.action_screenshot,
             "settings": lambda: self.on_settings and self.on_settings(),
-            "menu": lambda: self._show_menu(global_pos),
+            "about": lambda: self.on_about and self.on_about(),
+            "stream": self.action_toggle_streamer,
+            "stream_off": self.action_toggle_streamer,
+            "boss": lambda: self._toggle_cfg("boss_only"),
+            "live": self.close_session_view,
             "close": lambda: self.on_quit and self.on_quit(),
         }
         action = actions.get(value)
         if action:
             action()
 
+    #: Какой хоткей относится к какой кнопке — его дописываем в заголовок
+    #: подсказки: сочетание, о котором человек не знает, ему не поможет.
+    HOTKEY_OF = {"btn:play": "pause", "btn:clear": "reset", "btn:copy": "copy"}
+
+    def _tip_for(self, hit: str) -> tuple[str, str] | None:
+        """Заголовок и пояснение для элемента под курсором."""
+        if hit.startswith("drag:"):
+            return None
+        entry = HELP.get(hit)
+        if entry is None:
+            kind, _, value = hit.partition(":")
+            if kind == "metric" and METRIC_TITLE.get(value):
+                return (METRIC_TITLE[value], "")
+            return None
+        title, body = entry
+        # Сочетание клавиш дописываем к заголовку: хоткей, о котором
+        # человек не знает, ему не помогает.
+        key = self.cfg.get("hotkeys", {}).get(self.HOTKEY_OF.get(hit, ""), "")
+        return (f"{title}   {key}" if key else title, body)
+
+    def _paint_hint(self, p: QPainter, w: int, h: int, dpr: float) -> None:
+        """Подсказка НАД элементом, к которому она относится.
+
+        Рисуем сами, а не через QToolTip: окно живёт без фокуса и с
+        WS_EX_NOACTIVATE, и системная подсказка в нём появляется через раз,
+        особенно поверх игры. Своя плашка ведёт себя предсказуемо и
+        выглядит частью окна.
+        """
+        entry = self._tip_for(self._hot) if self._hot else None
+        if entry is None or self._hot_rect is None:
+            return
+        title, body = entry
+        fm_t = QFontMetrics(self.f_tab)
+        fm_b = QFontMetrics(self.f_small)
+        pad = 8
+        tw = fm_t.horizontalAdvance(title)
+        bw = fm_b.horizontalAdvance(body) if body else 0
+        box_w = min(w - 2 * PAD, max(tw, bw) + 2 * pad)
+        line_h = fm_t.height() + (fm_b.height() + 2 if body else 0)
+        box_h = line_h + 2 * 6
+
+        # Плашка встаёт НАД элементом и центрируется по нему: подсказка
+        # должна быть рядом с тем, о чём говорит, а не в отдельном углу.
+        rect = self._hot_rect
+        x = max(PAD, min(rect.center().x() - box_w // 2, w - PAD - box_w))
+        y = rect.top() - box_h - 6
+        # Плашке разрешено заезжать на полосу вкладок и на заголовок: она
+        # всплывающая, живёт долю секунды и должна стоять над тем, о чём
+        # говорит. Ограничение одно — не вылезти за верхнюю кромку окна.
+        # (Начало координат сдвинуто вниз на высоту заголовка, поэтому его
+        # верх — это отрицательный y.)
+        if y < -self.TITLE_H + 2:
+            # Элемент сам стоит у самой кромки — тогда снизу.
+            y = min(rect.bottom() + 6, h - box_h - 2)
+
+        p.setPen(Qt.NoPen)
+        p.setBrush(self._bg(L2, chrome=True))
+        p.drawRoundedRect(QRectF(x, y, box_w, box_h), R_CHIP, R_CHIP)
+        p.setPen(QPen(HAIR, 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(x + 0.5, y + 0.5, box_w - 1, box_h - 1),
+                          R_CHIP, R_CHIP)
+
+        base = y + 6 + fm_t.ascent()
+        self._txt(p, x + pad, base,
+                  fm_t.elidedText(title, Qt.ElideRight, box_w - 2 * pad),
+                  INK, self.f_tab)
+        if body:
+            self._txt(p, x + pad, base + fm_b.height() + 2,
+                      fm_b.elidedText(body, Qt.ElideRight, box_w - 2 * pad),
+                      INK3, self.f_small)
+
     def mouseMoveEvent(self, e) -> None:
         hot = self._hit_at(e.position())
         if hot != self._hot:
             self._hot = hot
+            self._hot_rect = next((r for n, r in self._hit if n == hot), None)
             self.update()
-        if hot:
+        if hot and not hot.startswith("drag:"):
             self.setCursor(Qt.PointingHandCursor)
         elif self._in_grip(e.position()):
             self.setCursor(Qt.SizeFDiagCursor)
@@ -1906,6 +2778,7 @@ class Overlay(QWidget):
     def leaveEvent(self, _e) -> None:
         if self._hot:
             self._hot = ""
+            self._hot_rect = None
             self.update()
 
     def mouseReleaseEvent(self, _e) -> None:
@@ -1920,6 +2793,33 @@ class Overlay(QWidget):
     def contextMenuEvent(self, e) -> None:
         self._show_menu(e.globalPos())
 
+    def _menu_pos(self, menu: QMenu, at) -> QPoint:
+        """Куда открыть меню, чтобы оно не легло на таблицу.
+
+        По умолчанию Qt раскрывает меню от курсора вниз-вправо, а курсор в
+        этот момент стоит на кнопке в шапке — то есть прямо над списком, и
+        меню закрывает как раз те строки, ради которых окно и открыто.
+        Уводим его ЗА окно: справа, если там есть место на экране, иначе
+        слева, иначе — под нижнюю кромку. Внутрь окна возвращаемся только
+        если человек зажал метр в угол экрана и снаружи места нет вовсе.
+        """
+        size = menu.sizeHint()
+        frame = self.frameGeometry()
+        screen = (self.screen() or QGuiApplication.primaryScreen())
+        area = screen.availableGeometry()
+
+        y = min(max(at.y() - 6, area.top()), area.bottom() - size.height())
+        right, left = frame.right() + 2, frame.left() - size.width() - 2
+        if right + size.width() <= area.right():
+            return QPoint(right, y)
+        if left >= area.left():
+            return QPoint(left, y)
+        below = frame.bottom() + 2
+        if below + size.height() <= area.bottom():
+            x = min(max(frame.left(), area.left()), area.right() - size.width())
+            return QPoint(x, below)
+        return QPoint(min(at.x(), area.right() - size.width()), y)
+
     def _show_menu(self, at) -> None:
         menu = QMenu(self)
         menu.setStyleSheet(
@@ -1929,12 +2829,31 @@ class Overlay(QWidget):
             "QMenu::item:selected{background:rgba(255,255,255,0.08)}"
             "QMenu::separator{height:1px;background:rgba(255,255,255,0.06);margin:4px 6px}"
         )
+        head = QAction(f"AionMeter {__version__}", self, enabled=False)
+        menu.addAction(head)
         stats = self.snapshot.get("stats", {})
-        if stats.get("read"):
-            act = QAction(f"parsed {stats.get('parsed', 0)} of {stats['read']} lines",
-                          self, enabled=False)
-            menu.addAction(act)
-            menu.addSeparator()
+        # Строка разбора нужна ИМЕННО когда прочитано ноль: раньше она
+        # пряталась под условием read > 0, то есть исчезала в каждом
+        # сломанном случае, ради которого её и добавляли.
+        menu.addAction(QAction(
+            f"parsed {stats.get('parsed', 0)} of {stats.get('read', 0)} lines",
+            self, enabled=False))
+        log_path = self.snapshot.get("log_path") or ""
+        if log_path:
+            fm = QFontMetrics(self.f_small)
+            menu.addAction(QAction(fm.elidedText(log_path, Qt.ElideMiddle, 420),
+                                   self, enabled=False))
+        menu.addSeparator()
+        # Фильтр по главной цели — первым: им пользуются в бою, а не раз в
+        # месяц, как прозрачностью. Подпись несёт имя цели, чтобы было
+        # видно, ЧТО именно метр считает боссом в этом бою.
+        boss = self.snapshot.get("boss") or ""
+        act = QAction(f"Boss damage only — {boss}" if boss else "Boss damage only",
+                      self, checkable=True, checked=bool(self.cfg.get("boss_only")),
+                      enabled=self.cfg.get("metric", "damage") == "damage")
+        act.triggered.connect(lambda _c: self._toggle_cfg("boss_only"))
+        menu.addAction(act)
+        menu.addSeparator()
         for key, label in (("show_loot", "Show footer summary"),
                            ("click_through", "Click-through"),
                            ("transparent", "Transparent background"),
@@ -1943,14 +2862,27 @@ class Overlay(QWidget):
             act.triggered.connect(lambda _c, k=key: self._toggle_cfg(k))
             menu.addAction(act)
         menu.addSeparator()
+        act_stream = QAction("Streamer mode", self, checkable=True,
+                             checked=bool(self.cfg.get("streamer")))
+        act_stream.triggered.connect(lambda _c: self.action_toggle_streamer())
+        menu.addAction(act_stream)
+        menu.addAction("About Wingbeat",
+                       lambda: self.on_about and self.on_about())
         menu.addAction("Hide window", self.action_toggle_hide)
         menu.addAction("Settings…", lambda: self.on_settings and self.on_settings())
         menu.addAction("Quit", lambda: self.on_quit and self.on_quit())
-        menu.exec(at)
+        menu.exec(self._menu_pos(menu, at))
 
     def _toggle_cfg(self, key: str) -> None:
         self.cfg[key] = not self.cfg.get(key)
-        if key == "transparent":
+        if key == "boss_only":
+            self.selected = ""
+            self._anim.clear()
+            republish = getattr(self.engine, "republish", None)
+            if republish is not None:
+                republish()
+            self._refresh()
+        elif key == "transparent":
             self.apply_appearance()
         elif key == "click_through":
             self.apply_window_flags()

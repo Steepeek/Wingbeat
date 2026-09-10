@@ -25,9 +25,9 @@ from aionmeter import applog
 from aionmeter import config as cfgmod
 from aionmeter import updates
 from aionmeter.engine import Engine
-from aionmeter.overlay import Overlay, make_icon
+from aionmeter.overlay import APP_NAME, Overlay, make_icon
 from aionmeter.settings_dialog import SettingsDialog
-from aionmeter.version import __version__
+from aionmeter.version import __version__, display as version_display
 
 
 class App:
@@ -40,7 +40,7 @@ class App:
 
         self.qt = QApplication(sys.argv)
         self.qt.setQuitOnLastWindowClosed(False)
-        self.qt.setApplicationName("AionMeter")
+        self.qt.setApplicationName(APP_NAME)
         self.qt.setApplicationVersion(__version__)
         self.icon = make_icon()
         self.qt.setWindowIcon(self.icon)
@@ -48,7 +48,8 @@ class App:
         self.cfg = cfgmod.load()
         self.engine = Engine(self.cfg)
         self.overlay = Overlay(self.engine, self.cfg,
-                               on_settings=self.open_settings, on_quit=self.quit)
+                               on_settings=self.open_settings, on_quit=self.quit,
+                               on_about=self.open_about)
         self.overlay.ensure_on_screen()
         self.overlay.show()
         self.overlay.apply_window_flags()
@@ -72,14 +73,14 @@ class App:
         from aionmeter import assets
         where = cfgmod.resolve_log_path(self.cfg)
         if where:
-            body = ("Клиент найден, читаю Chat.log.\n"
-                    "Значок в трее — настройки, пауза, выход.")
+            body = ("Game found, reading Chat.log.\n"
+                    "The tray icon has settings, pause and exit.")
         else:
-            body = ("Клиент не нашёлся — укажите папку игры в настройках.\n"
-                    "Значок метра в трее, рядом с часами.")
+            body = ("Game not found — set the game folder in Settings.\n"
+                    "The tray icon sits next to the clock.")
         if assets.root() is None:
-            body += "\n\nАссет-пак не найден: иконок и названий не будет."
-        self.tray.showMessage(f"AionMeter {__version__}", body,
+            body += "\n\nAsset pack missing: no icons or item names."
+        self.tray.showMessage(f"{APP_NAME} {version_display()}", body,
                               QSystemTrayIcon.Information, 9000)
 
     def _check_updates(self) -> None:
@@ -94,10 +95,10 @@ class App:
         updates.check_async(announce)
 
     def _show_update(self, info: dict) -> None:
-        applog.log.info("доступна версия %s (у нас %s)", info["tag"], __version__)
+        applog.log.info("update available: %s (running %s)", info["tag"], __version__)
         self.tray.showMessage(
-            "AionMeter", f"Вышла версия {info['tag']} — "
-            f"скачать можно на странице релизов.\nСейчас установлена {__version__}.",
+            APP_NAME, f"Version {info['tag']} is out — download it on the "
+            f"releases page.\nYou are running {__version__}.",
             QSystemTrayIcon.Information, 10000)
         self._update_info = info
 
@@ -109,14 +110,14 @@ class App:
         def run() -> None:
             info = updates.fetch()
             if info is None:
-                msg = "Не удалось проверить — нет связи с GitHub."
+                msg = "Could not check — no connection to GitHub."
             elif updates.is_newer_than_current(info["tag"]):
                 done(info)
                 return
             else:
-                msg = f"Установлена последняя версия ({__version__})."
+                msg = f"You are on the latest version ({__version__})."
             QTimer.singleShot(0, lambda: self.tray.showMessage(
-                "AionMeter", msg, QSystemTrayIcon.Information, 6000))
+                APP_NAME, msg, QSystemTrayIcon.Information, 6000))
 
         import threading
         threading.Thread(target=run, name="update-manual", daemon=True).start()
@@ -129,18 +130,20 @@ class App:
 
     def _build_tray(self) -> None:
         self.tray = QSystemTrayIcon(self.icon, self.qt)
-        self.tray.setToolTip("AionMeter")
+        self.tray.setToolTip(f"{APP_NAME} {version_display()}")
         menu = QMenu()
-        menu.addAction("Показать / скрыть", self.overlay.action_toggle_hide)
-        menu.addAction("Старт / стоп", self.overlay.action_toggle_pause)
-        menu.addAction("Очистить", self.overlay.action_clear)
-        menu.addAction("Клик насквозь", self.overlay.action_toggle_click)
+        menu.addAction("Show / hide", self.overlay.action_toggle_hide)
+        menu.addAction("Start / pause", self.overlay.action_toggle_pause)
+        menu.addAction("Reset", self.overlay.action_clear)
+        menu.addAction("Click-through", self.overlay.action_toggle_click)
+        menu.addAction("Streamer mode", self.overlay.action_toggle_streamer)
         menu.addSeparator()
-        menu.addAction("Настройки…", self.open_settings)
-        menu.addAction("Папка с логом программы", self._open_log_folder)
-        self.act_update = menu.addAction("Проверить обновления",
+        menu.addAction("Settings…", self.open_settings)
+        menu.addAction("Open log folder", self._open_log_folder)
+        menu.addAction("About Wingbeat", self.open_about)
+        self.act_update = menu.addAction("Check for updates",
                                          self._check_updates_now)
-        menu.addAction("Выход", self.quit)
+        menu.addAction("Quit", self.quit)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(
             lambda reason: self.overlay.action_toggle_hide()
@@ -154,24 +157,43 @@ class App:
         if failed:
             self.tray.showMessage(
                 "AionMeter",
-                "Сочетания уже заняты другой программой и работать не будут: "
-                + ", ".join(failed)
-                + ". Поменяйте их в настройках — или пользуйтесь кнопками в шапке.",
+                "These hotkeys are already taken by another program and will "
+                "not work: " + ", ".join(failed)
+                + ". Change them in Settings, or use the buttons in the window.",
                 QSystemTrayIcon.Information, 7000)
 
     # -- запуск --
 
     def _start_or_configure(self) -> None:
-        if not cfgmod.resolve_log_path(self.cfg):
+        # Автопоиск — только когда папка НЕ указана. Раньше он запускался
+        # всякий раз, когда лог не нашёлся, и молча переписывал в конфиге
+        # папку, которую человек выбрал руками: указал свой сервер, вышел
+        # из игры, запустил метр — и он уехал на другой клиент, найденный
+        # на диске первым.
+        if not self.cfg.get("game_dir") and not self.cfg.get("log_path"):
             found = cfgmod.autodetect_log()
             if found:
-                self.cfg["log_path"] = found
+                self.cfg["log_path"] = ""
                 self.cfg["game_dir"] = str(Path(found).parent)
                 cfgmod.save(self.cfg)
+                applog.log.info("игра найдена сама: %s", self.cfg["game_dir"])
         if not self.engine.start():
-            self.tray.showMessage("AionMeter", self.engine.error,
+            self.tray.showMessage(APP_NAME, self.engine.error,
                                   QSystemTrayIcon.Warning, 5000)
             self.open_settings(first_run=True)
+
+    def open_about(self) -> None:
+        """Окно «О программе». Как и настройки — поверх метра."""
+        from aionmeter.about_dialog import AboutDialog
+        self.overlay.suspend_topmost(True)
+        dlg = AboutDialog(parent=self.overlay)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        try:
+            dlg.exec()
+        finally:
+            self.overlay.suspend_topmost(False)
 
     def open_settings(self, first_run: bool = False) -> None:
         # На время настройки клик-сквозь мешает — временно снимаем
@@ -180,8 +202,21 @@ class App:
             self.cfg["click_through"] = False
             self.overlay.apply_window_flags()
 
-        dlg = SettingsDialog(self.cfg, self.engine)
-        if dlg.exec():
+        # Метр висит поверх всех окон и перекрывал бы собственное окно
+        # настроек, а таймер раз в две секунды возвращал бы его наверх.
+        # На время диалога отпускаем верхний слой и делаем метр родителем:
+        # тогда окно настроек гарантированно оказывается над ним.
+        self.overlay.suspend_topmost(True)
+        dlg = SettingsDialog(self.cfg, self.engine, parent=self.overlay)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        try:
+            accepted = dlg.exec()
+        finally:
+            self.overlay.suspend_topmost(False)
+        if accepted:
+            self.engine.close_session()
             self.engine.stop()
             dlg.apply_to(self.cfg)
             cfgmod.save(self.cfg)
@@ -190,13 +225,13 @@ class App:
             self.engine = Engine(self.cfg)
             self.overlay.engine = self.engine
             if not self.engine.start():
-                QMessageBox.warning(dlg, "AionMeter", self.engine.error)
+                QMessageBox.warning(dlg, APP_NAME, self.engine.error)
             elif self.overlay.hotkeys and self.overlay.hotkeys.failed:
                 self.tray.showMessage(
                     "AionMeter",
-                    "Не удалось занять сочетания: "
+                    "Could not register hotkeys: "
                     + ", ".join(self.overlay.hotkeys.failed)
-                    + ". Скорее всего они уже заняты другой программой.",
+                    + ". They are most likely taken by another program.",
                     QSystemTrayIcon.Information, 6000)
         else:
             self.cfg["click_through"] = was_click
@@ -204,7 +239,7 @@ class App:
 
         if first_run and not cfgmod.resolve_log_path(self.cfg):
             self.tray.showMessage(
-                "AionMeter", "Без пути к Chat.log метр работать не будет.",
+                APP_NAME, "Without a path to Chat.log the meter cannot run.",
                 QSystemTrayIcon.Warning, 5000)
 
     def quit(self) -> None:
@@ -212,6 +247,9 @@ class App:
         cfgmod.save(self.cfg)
         if self.overlay.hotkeys:
             self.overlay.hotkeys.unregister_all()
+        # Сессия закрывается кнопкой «Очистить», но выход — это тоже её
+        # конец: иначе вечерний фарм пропадал бы весь целиком.
+        self.engine.close_session()
         self.engine.stop()
         self.tray.hide()
         self.qt.quit()

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
@@ -59,10 +60,41 @@ class Actor:
     #: Что игрок ПРИМЕНЯЛ помимо урона: бафы, дебафы, контроль, а у
     #: себя ещё банки и свитки. Ключ -> сколько раз.
     buffs: Counter = field(default_factory=Counter)
+    #: Урон по каждой цели отдельно — из этого считается «только босс».
+    #: Значение — изменяемая пара [урон, удары]: обычный dict со списком
+    #: вместо двух Counter'ов выбран по замеру. На разборе всего лога
+    #: (2,7 млн событий) пара Counter'ов стоила 80 секунд из 186, список с
+    #: одним поиском по ключу — около 4. Цель у строки урона есть всегда, а
+    #: за сутки фарма их набегают тысячи, поэтому число ключей ограничено:
+    #: сверх потолка новые цели не заводятся, но общий итог не меняется.
+    by_target: dict[str, list[int]] = field(default_factory=dict)
+    #: Последние секунды: (секунда, урон). Только для скользящего окна.
+    recent: list[list[int]] = field(default_factory=list)
 
-    def add(self, ts: int, amount: int, crit: bool, skill: str, active_gap: int) -> None:
+    #: Потолок числа целей в разрезе и сколько оставлять при чистке.
+    #: Прежняя версия при переполнении просто отказывалась заводить новые
+    #: цели — и теряла ровно ту, ради которой разрез и нужен. Замер на
+    #: живом логе: за сутки фарма потолок выбирается мусорными мобами, и
+    #: пришедший потом босс в разрез уже не попадает: 267 244 урона по
+    #: нему показывались как ноль. Теперь при переполнении выбрасываем
+    #: САМЫЕ СЛАБЫЕ цели: босс по определению среди сильных, и вылететь
+    #: он не может. Чистка идёт пачкой, поэтому стоит O(1) на удар.
+    TARGET_CAP = 512
+    TARGET_KEEP = 256
+
+    def add(self, ts: int, amount: int, crit: bool, skill: str, active_gap: int,
+            target: str = "") -> None:
         self.total += amount
         self.hits += 1
+        if target:
+            slot = self.by_target.get(target)
+            if slot is not None:
+                slot[0] += amount
+                slot[1] += 1
+            else:
+                if len(self.by_target) >= self.TARGET_CAP:
+                    self._trim_targets()
+                self.by_target[target] = [amount, 1]
         if amount > self.max_hit:
             self.max_hit = amount
         if crit:
@@ -71,11 +103,34 @@ class Actor:
             self.skill_hits += 1
             self.skills[skill] += amount
         self.per_sec[ts] = self.per_sec.get(ts, 0) + amount
+        if self.recent and self.recent[-1][0] == ts:
+            self.recent[-1][1] += amount
+        else:
+            self.recent.append([ts, amount])
+            # Подрезаем хвост, только когда он реально отрос: сравнение
+            # дешевле, чем срез списка на каждом ударе.
+            if ts - self.recent[0][0] > self.RECENT_SPAN:
+                cut = ts - self.RECENT_SPAN
+                first = 0
+                while first < len(self.recent) and self.recent[first][0] < cut:
+                    first += 1
+                del self.recent[:first]
         if self.runs and ts - self.runs[-1][1] <= active_gap:
             if ts > self.runs[-1][1]:
                 self.runs[-1][1] = ts
         else:
             self.runs.append([ts, ts])
+
+    def _trim_targets(self) -> None:
+        """Оставить только самые крупные цели.
+
+        Выбрасываем мелочь, а не последнюю пришедшую: единственная цель,
+        которая обязана уцелеть, — это та, по которой набито больше всего,
+        то есть босс. Чистим сразу до половины потолка, поэтому на каждый
+        удар приходится в среднем ничтожная доля этой работы.
+        """
+        top = sorted(self.by_target.items(), key=lambda kv: -kv[1][0])
+        self.by_target = dict(top[:self.TARGET_KEEP])
 
     @property
     def active_seconds(self) -> int:
@@ -86,17 +141,42 @@ class Actor:
     def avg_dps(self) -> float:
         return self.total / self.active_seconds
 
+    #: Сколько секунд держать в кольце. Больше максимального окна DPS
+    #: (60 с по настройкам) с запасом на паузу между тиками.
+    RECENT_SPAN = 75
+
     def dps_now(self, now: int, window: int) -> float:
-        # Верхняя граница now-1: последняя секунда файла ещё пишется
+        # Верхняя граница now-1: последняя секунда файла ещё пишется.
+        # Считаем по кольцу последних секунд, а не по всей раскладке
+        # сессии: замер показал 263 тысячи записей в per_sec на миллионе
+        # событий, и полный перебор ради десятисекундного окна делался
+        # четыре раза в секунду для каждого актора.
         lo, hi = now - window, now - 1
         if hi < lo:
             return 0.0
-        s = sum(v for t, v in self.per_sec.items() if lo <= t <= hi)
+        s = 0
+        for t, v in self.recent:
+            if lo <= t <= hi:
+                s += v
         return s / window
 
     @property
     def crit_pct(self) -> float | None:
         return 100.0 * self.crits / self.hits if self.hits else None
+
+    def on_target(self, target: str) -> tuple[int, int]:
+        """Урон и удары по одной цели — (0, 0), если по ней не били."""
+        slot = self.by_target.get(target)
+        return (slot[0], slot[1]) if slot else (0, 0)
+
+    def top_targets(self, limit: int = 8) -> list[tuple[str, int]]:
+        """Цели по убыванию урона. Считается только по запросу: в снимке,
+
+        который строится четыре раза в секунду по всем акторам сразу, такая
+        сортировка стоила бы дороже, чем всё остальное вместе взятое.
+        """
+        rows = sorted(self.by_target.items(), key=lambda kv: -kv[1][0])
+        return [(name, slot[0]) for name, slot in rows[:limit]]
 
 
 class Encounter:
@@ -110,7 +190,13 @@ class Encounter:
             DAMAGE: {}, HEAL: {}, TAKEN: {},
         }
         self.targets: Counter = Counter()
-        self.kills: list[str] = []
+        #: Цель -> [первый удар, последний удар]. Нужно для скорости
+        #: убийства: длительность БОЯ считается от первого события вообще,
+        #: а честный парс по боссу — от первого удара именно по нему.
+        self.target_seen: dict[str, list[int]] = {}
+        #: Убитые: (имя, когда). Раньше лежали одни имена, и сказать,
+        #: за сколько положили босса, было нельзя.
+        self.kills: list[tuple[str, int]] = []
 
     def actor(self, metric: str, name: str) -> Actor:
         table = self.actors[metric]
@@ -126,6 +212,38 @@ class Encounter:
     @property
     def duration(self) -> int:
         return self.last - self.start + 1
+
+    def note_target(self, name: str, ts: int) -> None:
+        """Отметить, что по цели ударили в этот момент."""
+        seen = self.target_seen.get(name)
+        if seen is None:
+            # Потолок тот же, что у разреза по целям: за осаду их набегают
+            # тысячи, а интересны те, по кому реально били.
+            if len(self.target_seen) >= 512:
+                return
+            self.target_seen[name] = [ts, ts]
+        else:
+            seen[1] = ts
+
+    def kill_time(self, name: str) -> int | None:
+        """Когда цель убили. None, если её не убивали."""
+        for who, ts in reversed(self.kills):
+            if who == name:
+                return ts
+        return None
+
+    def time_to_kill(self, name: str) -> int | None:
+        """Сколько секунд шёл бой с этой целью до её смерти.
+
+        Считается от ПЕРВОГО удара по ней до строки опыта за неё, а не по
+        длительности боя целиком: перед боссом почти всегда чистят аддов,
+        и календарное время боя завышало бы скорость убийства.
+        """
+        killed = self.kill_time(name)
+        seen = self.target_seen.get(name)
+        if killed is None or seen is None:
+            return None
+        return max(1, killed - seen[0] + 1)
 
 
 class Meter:
@@ -145,6 +263,12 @@ class Meter:
         self.party_manual: set[str] = set()
         self.party_excluded: set[str] = set()
         self.pets: set[str] = set()
+        #: Пет -> его хозяин. Раньше был просто набор имён, и правило
+        #: «пет = мой» приписывало владельцу метра ЧУЖИХ спиритов: у двух
+        #: спиритмастеров в группе питомцы зовутся одинаково. Теперь
+        #: владельца берём из строки саммона, а при совпадении имён
+        #: побеждает тот, кто призвал позже, — как и с дотами.
+        self.pet_owner: dict[str, str] = {}
         self.mobs: set[str] = set()
         self.hostiles: set[str] = set()
         self.encounter: Encounter | None = None
@@ -247,15 +371,15 @@ class Meter:
             self.party_seen.discard(name)
 
     def _add(self, metric: str, name: str, ts: int, amount: int,
-             crit: bool, skill: str) -> None:
+             crit: bool, skill: str, target: str = "") -> None:
         """Пишем и в текущий бой, и в счётчик за всю сессию."""
         gap = self.cfg["active_gap"]
         enc = self._ensure(ts)
-        enc.actor(metric, name).add(ts, amount, crit, skill, gap)
+        enc.actor(metric, name).add(ts, amount, crit, skill, gap, target)
         if not self.session.start:
             self.session.start = ts
         self.session.last = max(self.session.last, ts)
-        self.session.actor(metric, name).add(ts, amount, crit, skill, gap)
+        self.session.actor(metric, name).add(ts, amount, crit, skill, gap, target)
 
     def _owner(self, name: str) -> str:
         """Питомца схлопываем во владельца, свой ник — в «You».
@@ -266,7 +390,10 @@ class Meter:
         в таблице дважды — это и есть та самая лишняя строка.
         """
         if self.cfg.get("merge_pets", True) and name in self.pets:
-            return SELF
+            owner = self.pet_owner.get(name, SELF)
+            if self.self_name and owner == self.self_name:
+                return SELF
+            return owner
         if self.self_name and name == self.self_name:
             return SELF
         return name
@@ -422,9 +549,33 @@ class Meter:
 
         if kind == "summon":
             if ev.extra == "add":
-                self.pets.add(ev.target)
+                owner = ev.actor or SELF
+                mine = self.pet_owner.get(ev.target) in (SELF, self.self_name)
+                # Имена петов не уникальны: «Holy Servant» на живом логе
+                # призывают 180 разных игроков. Поэтому чужой саммон НЕ
+                # перехватывает пета, которого призвали мы, — иначе наш
+                # спирит и наши ловушки уезжали в чужую строку до конца
+                # боя. Своё имя всегда перебивает чужое.
+                if owner in (SELF, self.self_name) or not mine:
+                    self.pets.add(ev.target)
+                    self.pet_owner[ev.target] = owner
             else:
                 self.pets.discard(ev.target)
+                self.pet_owner.pop(ev.target, None)
+            return
+
+        if kind == "login":
+            # Вход в игру: за «You» МОЖЕТ стоять уже другой персонаж, но
+            # доказательств этого пока нет. Ник не стираем — просто снимаем
+            # с него отметку «подтверждён», чтобы следующая однозначная
+            # строка могла его заменить. Стирать было нельзя: без ника
+            # ломается склейка своих строк, и одно попадание, записанное и
+            # от первого лица, и по нику, считается дважды. Клиент к тому
+            # же пишет эту строку парами и при каждой смене статуса, а не
+            # только при заходе новым персонажем.
+            if not self.cfg.get("self_name"):
+                self.self_confirmed = False
+                self._own_chat.clear()
             return
 
         if kind == "chat":
@@ -464,10 +615,10 @@ class Meter:
             # мобом его считать нельзя, иначе он пропадёт из таблицы.
             if not is_player_name(ev.target):
                 self.mobs.add(ev.target)
-            self.session.kills.append(ev.target)
+            self.session.kills.append((ev.target, ev.ts))
             enc = self.encounter
             if enc is not None:
-                enc.kills.append(ev.target)
+                enc.kills.append((ev.target, ev.ts))
                 self.pending_close = ev.ts + self.cfg["kill_grace"]
             return
 
@@ -522,11 +673,24 @@ class Meter:
             if ev.target == SELF or ev.target in self.party                     or ev.target in self.party_seen or ev.target in self.party_manual:
                 self._add(TAKEN, self._owner(ev.target), ev.ts, ev.amount, False, "")
                 return
-            self._ensure(ev.ts).targets[ev.target] += ev.amount
+            enc_dot = self._ensure(ev.ts)
+            enc_dot.targets[ev.target] += ev.amount
+            enc_dot.note_target(ev.target, ev.ts)
             self.session.targets[ev.target] += ev.amount
-            owner = self._dot_owner(ev.extra, ev.target)
+            self.session.note_target(ev.target, ev.ts)
+            # Строка «X received N poisoning damage after you used S»
+            # называет автора прямо — угадывать по эффекту и классу тут
+            # нечего. Заодно запоминаем владельца: следующие тики того же
+            # эффекта придут уже безымянными.
+            if ev.actor:
+                owner = ev.actor
+                if ev.extra:
+                    self.effect_owner[(ev.extra, ev.target)] = owner
+            else:
+                owner = self._dot_owner(ev.extra, ev.target)
             self._add(DAMAGE, self._owner(owner) if owner else UNATTRIBUTED,
-                      ev.ts, ev.amount, False, ev.extra if owner else "")
+                      ev.ts, ev.amount, False, ev.extra if owner else "",
+                      ev.target)
             return
 
         if kind != "damage" or ev.amount <= 0:
@@ -549,13 +713,15 @@ class Meter:
                 self.hostiles.add(ev.actor)
             if ev.target != SELF and ev.target not in self.pets:
                 self.party_seen.add(ev.target)
-            self._add(TAKEN, self._owner(ev.target), ev.ts, ev.amount, ev.crit, ev.skill)
+            self._add(TAKEN, self._owner(ev.target), ev.ts, ev.amount, ev.crit,
+                      ev.skill, ev.actor)
             return
 
         # Урон по кому-то из наших — значит бьёт враг.
         if ev.target == SELF or ev.target in self.party:
             self.hostiles.add(ev.actor)
-            self._add(TAKEN, self._owner(ev.target), ev.ts, ev.amount, ev.crit, ev.skill)
+            self._add(TAKEN, self._owner(ev.target), ev.ts, ev.amount, ev.crit,
+                      ev.skill, ev.actor)
             return
 
         if ev.skill:
@@ -569,9 +735,12 @@ class Meter:
 
         enc = self._ensure(ev.ts)
         enc.targets[ev.target] += ev.amount
+        enc.note_target(ev.target, ev.ts)
         self.session.targets[ev.target] += ev.amount
+        self.session.note_target(ev.target, ev.ts)
         self._maybe_split_on_target(enc, ev)
-        self._add(DAMAGE, self._owner(ev.actor), ev.ts, ev.amount, ev.crit, ev.skill)
+        self._add(DAMAGE, self._owner(ev.actor), ev.ts, ev.amount, ev.crit,
+                  ev.skill, ev.target)
 
     def _maybe_split_on_target(self, enc: Encounter, ev) -> None:
         """Смена доминирующей цели — третий сигнал конца боя."""
@@ -649,6 +818,122 @@ class Meter:
             })
         return rows
 
+    #: Сколько скиллов и целей кладём в файл сессии на одного игрока.
+    #: Хвост длиннее этого в отчёте не нужен, а файл от него пухнет.
+    EXPORT_SKILLS = 40
+    EXPORT_TARGETS = 12
+
+    def export(self) -> dict | None:
+        """Сессия целиком — в простой словарь, готовый лечь в JSON.
+
+        Возвращает None, если считать нечего: пустую сессию сохранять
+        незачем, а нажатие «Очистить» на пустом метре — обычное дело.
+        """
+        enc = self.session
+        if not enc.start or not any(enc.actors[m] for m in (DAMAGE, HEAL, TAKEN)):
+            return None
+
+        def dump(metric: str) -> list[dict]:
+            out = []
+            for name, a in enc.actors[metric].items():
+                if not a.total:
+                    continue
+                out.append({
+                    "name": name,
+                    "cls": self.actor_class(name),
+                    "total": a.total,
+                    "hits": a.hits,
+                    "crits": a.crits,
+                    "max": a.max_hit,
+                    "active": a.active_seconds,
+                    "avg": round(a.avg_dps, 1),
+                    "skills": a.skills.most_common(self.EXPORT_SKILLS),
+                    "targets": a.top_targets(self.EXPORT_TARGETS),
+                })
+            out.sort(key=lambda r: -r["total"])
+            return out
+
+        boss = enc.dominant
+        rows = dump(DAMAGE)
+        fights = self.export_fights()
+        mine = next((r for r in rows if r["name"] == SELF), None)
+        return {
+            "start": enc.start,
+            "end": enc.last,
+            "duration": enc.duration,
+            "self_name": self.self_name,
+            "self_class": self.actor_class(SELF),
+            "boss": boss,
+            "kills": [list(k) for k in enc.kills[-200:]],
+            "kill_count": len(enc.kills),
+            "fights": fights,
+            "targets": enc.targets.most_common(20),
+            "loot": dict(self.loot),
+            "party": sorted((self.party | self.party_seen | self.party_manual)
+                            - self.party_excluded),
+            "total": sum(r["total"] for r in rows),
+            "you": {
+                "total": mine["total"] if mine else 0,
+                "avg": mine["avg"] if mine else 0.0,
+                "boss": dict(mine["targets"]).get(boss, 0) if mine else 0,
+            },
+            "damage": rows,
+            "heal": dump(HEAL),
+            "taken": dump(TAKEN),
+        }
+
+    #: Сколько боёв класть в файл сессии и сколько игроков в каждый.
+    EXPORT_FIGHTS = 60
+    EXPORT_FIGHT_PLAYERS = 24
+
+    def export_fights(self) -> list[dict]:
+        """Отдельные бои сессии — то, из чего потом строится рейтинг.
+
+        Сессия целиком для рейтинга не годится: сравнивать надо один бой с
+        одним боссом, а не вечер фарма. Поэтому здесь у каждого боя своя
+        цель, свои участники и, главное, СКОРОСТЬ убийства — время от
+        первого удара по цели до строки опыта за неё.
+        """
+        out = []
+        fights = list(self.history)
+        if self.encounter is not None:
+            fights.append(self.encounter)
+        for enc in fights[-self.EXPORT_FIGHTS:]:
+            boss = enc.dominant
+            if not boss or not enc.start:
+                continue
+            killed_at = enc.kill_time(boss)
+            seen = enc.target_seen.get(boss) or [enc.start, enc.last]
+            players = []
+            for name, a in enc.actors[DAMAGE].items():
+                on_boss, hits_boss = a.on_target(boss)
+                if not on_boss:
+                    continue
+                players.append({
+                    "name": name,
+                    "cls": self.actor_class(name),
+                    "total": on_boss,
+                    "hits": hits_boss,
+                    "all_targets": a.total,
+                })
+            if not players:
+                continue
+            players.sort(key=lambda r: -r["total"])
+            span = enc.time_to_kill(boss) or max(1, seen[1] - seen[0] + 1)
+            out.append({
+                "boss": boss,
+                "start": seen[0],
+                "end": killed_at if killed_at is not None else seen[1],
+                # Календарные секунды от первого удара по цели до её смерти.
+                # Именно эту величину сравнивают между собой: «за сколько
+                # положили» — и по ней же считается DPS для рейтинга.
+                "seconds": span,
+                "killed": killed_at is not None,
+                "total": sum(r["total"] for r in players),
+                "players": players[:self.EXPORT_FIGHT_PLAYERS],
+            })
+        return out
+
     def snapshot(self, metric: str | None = None, whole: bool | None = None) -> dict:
         cfg = self.cfg
         metric = metric or cfg.get("metric", DAMAGE)
@@ -658,12 +943,72 @@ class Meter:
         window = cfg["dps_window"]
         now = self.last_ts
 
+        # «Только босс» — это фильтр по ГЛАВНОЙ цели среза, а не отдельная
+        # метрика: у босса и у аддов урон пишется одними и теми же строками,
+        # разделяет их только имя цели. Работает на уроне; на хиле и на
+        # полученном уроне главной цели нет по смыслу.
+        boss = enc.dominant if enc is not None else ""
+        boss_only = bool(cfg.get("boss_only")) and metric == DAMAGE and bool(boss)
+
+        # Итоги первого прохода живут между вызовами, поэтому сбрасываем
+        # их здесь: иначе снимок вкладки добычи показал бы суммы с вкладки
+        # урона, посчитанные предыдущим вызовом.
+        self._sec_totals = None
+        self._light_total = None
+        self._light_count = None
+
         rows = self._loot_rows() if metric == LOOT else []
+        # Вкладка сессий живёт на диске, а не в памяти метра: строки для неё
+        # собирает окно. Здесь важно только не искать её среди метрик боя —
+        # иначе выбранная вкладка роняла бы снимок при следующем запуске.
+        if metric not in (DAMAGE, HEAL, TAKEN, LOOT):
+            enc = None
         if enc is not None and metric != LOOT:
+            # Снимок строится в ДВА прохода. Первый — дешёвый: имя, секция
+            # и итог, чтобы отсортировать и посчитать доли. Второй — полный,
+            # только для строк, которые действительно окажутся в окне.
+            # Раньше проход был один: на живом логе снимок собирал 2650
+            # строк со всеми скиллами и бафами, чтобы показать двенадцать,
+            # и стоил 70-110 мс четыре раза в секунду.
+            light = []
             for name, a in enc.actors[metric].items():
                 section = self.section_of(name)
                 if section is None:
                     continue
+                on_boss, hits_boss = a.on_target(boss) if boss else (0, 0)
+                if boss_only and not on_boss:
+                    # Ни одного удара по главной цели — в таблице «только
+                    # босс» такой строке делать нечего.
+                    continue
+                light.append((name, a, section, on_boss, hits_boss,
+                              on_boss if boss_only else a.total,
+                              hits_boss if boss_only else a.hits))
+
+            split_now = cfg.get("scope") == "split"
+            if split_now:
+                order_key = {"party": 0, "other": 1}
+                light.sort(key=lambda r: (order_key[r[2]], -r[5], -r[6], r[0]))
+            else:
+                light.sort(key=lambda r: (-r[5], -r[6], r[0]))
+
+            # Доли считаются по ВСЕМ строкам, поэтому суммы берём здесь,
+            # пока полные словари ещё не построены.
+            self._sec_totals = {}
+            for item in light:
+                self._sec_totals[item[2]] = self._sec_totals.get(item[2], 0) + item[5]
+
+            limit = cfg.get("max_rows", 12)
+            # Строку без владельца окно рисует отдельно, поэтому она нужна
+            # всегда, даже если не попала в первые max_rows.
+            visible = list(light[:limit])
+            seen_names = {item[0] for item in visible}
+            for item in light[limit:]:
+                if item[0] in (UNATTRIBUTED, UNKNOWN_HEALER) and item[0] not in seen_names:
+                    visible.append(item)
+            self._light_total = sum(item[5] for item in light)
+            self._light_count = len(light)
+
+            for name, a, section, on_boss, hits_boss, row_total, row_hits in visible:
                 # Свой персонаж подписан «You». Ник определяется и хранится
                 # (он нужен, чтобы узнавать себя в строках вида «because
                 # <Ник> used <скилл>»), но в таблицу не подставляется:
@@ -678,12 +1023,23 @@ class Meter:
                     "cls": cls,
                     "cls_name": skilldb.CLASSES.get(cls, ""),
                     "section": section,
-                    "total": a.total,
-                    "dps": a.dps_now(now, window),
-                    "avg": a.avg_dps,
-                    "hits": a.hits,
+                    # В режиме «только босс» и итог, и обе скорости считаются
+                    # по одной цели. Скользящее окно там взять неоткуда —
+                    # посекундная раскладка ведётся на игрока целиком, а не
+                    # на каждую его цель, — поэтому обе колонки показывают
+                    # одно и то же: урон по боссу на активное время. Врать
+                    # «текущим» DPS, посчитанным по всем целям сразу, хуже.
+                    "total": row_total,
+                    "dps": (on_boss / a.active_seconds if boss_only
+                            else a.dps_now(now, window)),
+                    "avg": on_boss / a.active_seconds if boss_only else a.avg_dps,
+                    "hits": row_hits,
                     "crit": a.crit_pct,
                     "max": a.max_hit,
+                    #: Урон по главной цели — есть всегда, даже когда фильтр
+                    #: выключен: по нему рисуется подпись «по боссу» в подвале.
+                    "boss_total": on_boss,
+                    "boss_hits": hits_boss,
                     "is_self": name == SELF or (bool(self.self_name) and name == self.self_name),
                     "is_party": name in self.party,
                     # ВСЕ скиллы, а не первые восемь. Обрезка тут была вдвойне
@@ -709,28 +1065,44 @@ class Meter:
             groups = [("all", rows)]
 
         # Доля — от суммы своей группы строк, длина полосы — от лидера.
+        # Суммы взяты из первого прохода: в rows лежат только видимые
+        # строки, и считать проценты по ним значило бы врать — у каждого
+        # вышло бы больше, чем на самом деле.
+        sec_totals = self._sec_totals
         sections = []
         for key, part in groups:
             if not part:
                 continue
-            sec_total = sum(r["total"] for r in part) or 1
+            if sec_totals is not None and metric != LOOT:
+                sec_total = sec_totals.get(key if key != "all" else None, 0)
+                if key == "all":
+                    sec_total = sum(sec_totals.values())
+            else:
+                sec_total = sum(r["total"] for r in part)
+            sec_total = sec_total or 1
             top = part[0]["total"] or 1
             for r in part:
                 r["pct"] = 100.0 * r["total"] / sec_total
                 r["bar"] = r["total"] / top
             sections.append({"key": key, "total": sec_total, "count": len(part)})
 
-        limit = cfg.get("max_rows", 12)
-        shown = rows[:limit]
+        shown = rows[:cfg.get("max_rows", 12) + 2]
         return {
             "rows": shown,
             "sections": sections,
             "split": split,
-            "hidden": max(0, len(rows) - limit),
-            "total": sum(r["total"] for r in rows),
+            "hidden": max(0, (self._light_count if self._light_count is not None
+                              else len(rows)) - cfg.get("max_rows", 12)),
+            "total": (self._light_total if self._light_total is not None
+                      else sum(r["total"] for r in rows)),
             "duration": enc.duration if enc and enc.start else 0,
-            "target": enc.dominant if enc else "",
+            "target": boss,
+            "boss": boss,
+            "boss_only": boss_only,
             "kills": len(enc.kills) if enc else 0,
+            # Сколько шёл бой с текущей целью до её смерти. None — ещё жива.
+            "boss_seconds": enc.time_to_kill(boss) if (enc and boss) else None,
+            "started": enc.start if enc else 0,
             "loot": dict(self.loot),
             "items": {who: dict(c) for who, c in self.items.items()},
             "rolls": list(self.rolls[-20:]),
@@ -740,6 +1112,11 @@ class Meter:
             "self_name": self.self_name,
             "party": sorted((self.party | self.party_seen | self.party_manual)
                             - self.party_excluded),
-            "active": enc is not None,
+            # Раньше здесь стояло «enc is not None», а в режиме сессии
+            # объект живёт с самого запуска — флаг не гас никогда, и окно
+            # перерисовывалось 30 раз в секунду вечно. Теперь бой считается
+            # идущим, пока в логе есть свежие события.
+            "active": bool(enc is not None and enc.last
+                           and time.time() - enc.last <= cfg["encounter_timeout"]),
             "stats": dict(self.stats),
         }

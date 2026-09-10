@@ -23,18 +23,20 @@ from pathlib import Path
 from . import config as cfgmod
 
 #: Префикс имени строки скилла -> класс. Разобрано по client_strings_skill.xml.
+#: Названия — как в английском клиенте: метр рассчитан на него, и в
+#: подсказке класса человек должен видеть ровно то слово, что в игре.
 CLASSES: dict[str, str] = {
-    "FI": "Гладиатор",
-    "KN": "Темплар",
-    "AS": "Ассасин",
-    "RA": "Рейнджер",
-    "WI": "Волшебник",
-    "EL": "Спиритмастер",
-    "PR": "Клирик",
-    "CH": "Чантер",
-    "Ba": "Бард",
-    "Gu": "Стрелок",
-    "RI": "Аэротех",
+    "FI": "Gladiator",
+    "KN": "Templar",
+    "AS": "Assassin",
+    "RA": "Ranger",
+    "WI": "Sorcerer",
+    "EL": "Spiritmaster",
+    "PR": "Cleric",
+    "CH": "Chanter",
+    "Ba": "Songweaver",
+    "Gu": "Gunslinger",
+    "RI": "Aethertech",
 }
 
 #: Цвет класса. Своя палитра, а не из игры: нужен контраст на тёмном фоне
@@ -112,7 +114,7 @@ def build(game_dir: str) -> dict:
     pak = find_data_pak(game_dir)
     if pak is None:
         raise FileNotFoundError(
-            "не найден L10N/<язык>/data/data.pak с таблицей скиллов")
+            "no L10N/<lang>/data/data.pak with the skill table")
     with zipfile.ZipFile(pak) as z:
         raw = z.read("strings/client_strings_skill.xml")
 
@@ -150,14 +152,41 @@ def load() -> dict[str, str]:
         return {}
 
 
+def source_of() -> str:
+    """Из какого пака собрана лежащая база. Пусто, если базы нет."""
+    try:
+        return json.loads(db_path().read_text("utf-8")).get("source", "")
+    except (OSError, ValueError):
+        return ""
+
+
 def ensure(game_dir: str) -> dict[str, str]:
-    """Отдаёт базу, собирая её при первом запуске."""
+    """Отдаёт базу, собирая её при первом запуске и при смене клиента.
+
+    Настройки для этого нет намеренно: база — не выбор человека, а
+    служебные данные, которые программа обязана добыть сама. Пересобираем,
+    когда сохранённый источник исчез или лежит в другой папке игры: иначе
+    после переезда клиента метр молча продолжал бы жить со старой базой.
+    """
     skills = load()
-    if skills or not game_dir:
+    if skills:
+        source = source_of()
+        fresh = bool(source) and Path(source).is_file()
+        if fresh and game_dir:
+            # Источник должен лежать внутри той папки игры, которую метр
+            # читает сейчас. Сравниваем по пути, а не по содержимому:
+            # распаковывать пак ради проверки на каждом старте дорого.
+            try:
+                Path(source).relative_to(Path(game_dir))
+            except ValueError:
+                fresh = False
+        if fresh or not game_dir:
+            return skills
+    if not game_dir:
         return skills
     try:
         data = build(game_dir)
     except Exception:                      # noqa: BLE001 - без базы метр работает
-        return {}
+        return skills
     save(data)
     return data["skills"]

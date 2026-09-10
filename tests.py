@@ -14,7 +14,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from aionmeter.aggregate import DAMAGE, UNATTRIBUTED, Meter
+from aionmeter.aggregate import (DAMAGE, UNATTRIBUTED, UNKNOWN_HEALER, Meter)
+
+NO_OWNER_NAMES = (UNATTRIBUTED, UNKNOWN_HEALER)
 from aionmeter.config import DEFAULTS
 from aionmeter.parser import iter_records, parse, to_int
 from aionmeter.tailer import Tailer
@@ -612,8 +614,8 @@ m17.feed(parse("2026.08.29 19:00:01", "Ann inflicted 100 damage on Mob by using 
 m17.feed(parse("2026.08.29 19:00:01", "Bob inflicted 200 damage on Mob by using Freezing Wind IV."))
 m17.feed(parse("2026.08.29 19:00:02", "Cid inflicted 300 damage on Mob."))
 by_name = {r["display"]: r for r in m17.snapshot(DAMAGE)["rows"]}
-check("класс по скиллам", by_name["Ann"]["cls_name"], "Рейнджер")
-check("другой класс у другого игрока", by_name["Bob"]["cls_name"], "Волшебник")
+check("класс по скиллам", by_name["Ann"]["cls_name"], "Ranger")
+check("другой класс у другого игрока", by_name["Bob"]["cls_name"], "Sorcerer")
 check("без скиллов класса нет", by_name["Cid"]["cls_name"], "")
 check("код класса тоже в снимке", by_name["Ann"]["cls"], "RA")
 check("у каждого класса есть цвет",
@@ -912,6 +914,631 @@ try:
     tmp.rmdir()
 except OSError:
     pass
+
+print("урон по целям и фильтр «только босс»")
+
+def _boss_meter():
+    cfg = dict(DEFAULTS)
+    cfg["self_name"] = "Steepeek"
+    m = Meter(cfg)
+    lines = [
+        "You inflicted 1000 damage on Modor by using Fang Strike V.",
+        "You inflicted 500 damage on Modor Add by using Fang Strike V.",
+        "Weisti inflicted 2000 damage on Modor by using Blaze V.",
+        "Weisti inflicted 100 damage on Modor Add by using Blaze V.",
+    ]
+    for i, body in enumerate(lines):
+        ev = P(body, ts="2026.09.10 21:14:%02d" % i)
+        assert ev is not None, body
+        m.feed(ev)
+    return cfg, m
+
+
+cfg_b, m_b = _boss_meter()
+snap_b = m_b.snapshot(DAMAGE)
+rows_b = {r["name"]: r for r in snap_b["rows"]}
+check("главная цель определена", snap_b["boss"], "Modor")
+check("разрез по целям ведётся",
+      m_b.session.actors[DAMAGE]["You"].top_targets(),
+      [("Modor", 1000), ("Modor Add", 500)])
+check("урон и удары по одной цели",
+      m_b.session.actors[DAMAGE]["You"].on_target("Modor Add"), (500, 1))
+check("по цели, которую не били, нули",
+      m_b.session.actors[DAMAGE]["You"].on_target("Nobody"), (0, 0))
+check("итог без фильтра — по всем целям", rows_b["You"]["total"], 1500)
+check("урон по главной цели виден и без фильтра", rows_b["You"]["boss_total"], 1000)
+
+cfg_b["boss_only"] = True
+snap_bo = m_b.snapshot(DAMAGE)
+rows_bo = {r["name"]: r for r in snap_bo["rows"]}
+check("фильтр включён", snap_bo["boss_only"], True)
+check("в итоге только урон по боссу", rows_bo["You"]["total"], 1000)
+check("удары тоже по боссу", rows_bo["You"]["hits"], 1)
+check("доля пересчитана от урона по боссу",
+      round(rows_bo["You"]["pct"]), 33)
+check("итог таблицы без аддов", snap_bo["total"], 3000)
+
+# Кто по боссу не бил — в таблице «только босс» его быть не должно.
+ev_add = P("Ivar inflicted 700 damage on Modor Add by using Blaze V.",
+           ts="2026.09.10 21:14:10")
+m_b.feed(ev_add)
+cfg_b["boss_only"] = False
+check("бивший только аддов виден без фильтра",
+      "Ivar" in {r["name"] for r in m_b.snapshot(DAMAGE)["rows"]}, True)
+cfg_b["boss_only"] = True
+check("бивший только аддов скрыт фильтром",
+      "Ivar" in {r["name"] for r in m_b.snapshot(DAMAGE)["rows"]}, False)
+
+# Фильтр — только для урона: у хила главной цели нет по смыслу.
+cfg_b["metric"] = "heal"
+check("на хиле фильтр не действует", m_b.snapshot("heal")["boss_only"], False)
+
+print("сессии: выгрузка и файлы")
+
+from aionmeter import sessions as sessmod
+
+cfg_s, m_s = _boss_meter()
+data = m_s.export()
+check("выгрузка непустая", bool(data), True)
+check("в выгрузке главная цель", data["boss"], "Modor")
+check("в выгрузке все участники", len(data["damage"]), 2)
+check("свой урон отдельно", data["you"]["total"], 1500)
+check("свой урон по боссу отдельно", data["you"]["boss"], 1000)
+check("итог сессии", data["total"], 3600)
+
+check("пустая сессия не выгружается", Meter(dict(DEFAULTS)).export(), None)
+m_s.reset()
+check("после очистки выгружать нечего", m_s.export(), None)
+
+# Файлы кладём во временный APPDATA, чтобы не трогать настоящие настройки.
+sess_home = Path(tempfile.mkdtemp(prefix="aionmeter-sessions-"))
+old_appdata = os.environ.get("APPDATA")
+os.environ["APPDATA"] = str(sess_home)
+try:
+    path = sessmod.save(data, cfg_s)
+    check("файл сессии записан", bool(path and Path(path).is_file()), True)
+    listed = sessmod.listing()
+    check("сессия читается обратно", len(listed), 1)
+    check("состав сохранился", listed[0]["boss"], "Modor")
+    check("версия формата проставлена", listed[0]["v"], sessmod.VERSION)
+
+    # Второй файл с тем же временем начала не должен затирать первый.
+    sessmod.save(data, cfg_s)
+    check("одинаковое время начала не затирает файл", len(sessmod.listing()), 2)
+
+    # Выключенное сохранение не пишет ничего.
+    off = dict(cfg_s)
+    off["save_sessions"] = False
+    check("выключенное сохранение не пишет", sessmod.save(data, off), None)
+
+    # Потолок хранения вытесняет старые файлы.
+    keep = dict(cfg_s)
+    keep["keep_sessions"] = 2
+    for i in range(3):
+        shifted = dict(data)
+        shifted["start"] = data["start"] + 60 * (i + 1)
+        sessmod.save(shifted, keep)
+    check("сверх потолка файлы удаляются", len(sessmod.listing()), 2)
+finally:
+    if old_appdata is None:
+        os.environ.pop("APPDATA", None)
+    else:
+        os.environ["APPDATA"] = old_appdata
+    for f in sess_home.rglob("*"):
+        try:
+            f.unlink()
+        except OSError:
+            pass
+    try:
+        (sess_home / "sessions").rmdir()
+        sess_home.rmdir()
+    except OSError:
+        pass
+
+print("исправленные шаблоны и живучесть разбора")
+
+from aionmeter.config import detect_encoding, system_ansi
+from aionmeter.parser import MAX_DIGITS, to_int
+
+# Длинные имена мобов: при лимите в 32 символа целые инстансы выпадали.
+e = P("You received 1" + NBSP + "164 damage from Pashid Destruction Unit Rearguard.")
+check("длинное имя моба разбирается", (e.kind, e.amount, e.incoming),
+      ("damage", 1164, True))
+check("длинное имя моба целиком", e.actor, "Pashid Destruction Unit Rearguard")
+
+# Тики ловушек рейнджера: автор назван прямо, значит это не сирота.
+e = P("Steel Rose Sharpshooter received 653 poisoning damage after you used "
+      "Poisoning Trap V Effect.")
+check("свой тик ловушки с автором", (e.kind, e.actor, e.amount),
+      ("dot", "You", 653))
+e = P("Dummy received 200 bleeding damage after Weisti used Wind Cut Down VI.")
+check("чужой тик кровотечения с автором", (e.kind, e.actor), ("dot", "Weisti"))
+
+# Урон со снятием бафов: имя цели стоит ПЕРЕД числом.
+e = P("Wuaffel used Aegis Breaker I to deal Terath Vanquisher 3" + NBSP
+      + "451 damage and dispel some magical buffs.")
+check("урон со снятием бафов", (e.actor, e.target, e.amount, e.skill),
+      ("Wuaffel", "Terath Vanquisher", 3451, "Aegis Breaker I"))
+e = P("Kant used Ignite Aether VII to deal you 753 damage and dispel "
+      "some of your magical buffs.")
+check("снятие бафов по себе — входящий", (e.target, e.incoming, e.amount),
+      ("You", True, 753))
+e = P("Loluu used Magic Implosion I to deal Armory Maintenance Surkana  1 "
+      "damage and dispel some magical buffs.")
+check("двойной пробел перед числом", (e.target, e.amount),
+      ("Armory Maintenance Surkana", 1))
+
+# Саммоны в третьем лице.
+e = P("Granhildr has summoned Holy Servant to attack Modor by using "
+      "Summon Holy Servant V.")
+check("чужой саммон с целью", (e.kind, e.actor, e.target),
+      ("summon", "Granhildr", "Holy Servant"))
+e = P("Sarah summoned Healing Servant by using Summon Healing Servant I.")
+check("чужой саммон без цели", (e.actor, e.target), ("Sarah", "Healing Servant"))
+e = P("You summoned Water Spirit by using Summon Water Spirit V.")
+check("свой саммон помечен как свой", e.actor, "You")
+
+# Наложение эффекта: ключ — имя скилла, под ним придёт тик.
+e = P("Steel Rose Veteran received the Delayed Blast effect because "
+      "Weisti used Delayed Blast IV.")
+check("наложение эффекта с автором",
+      (e.kind, e.actor, e.target, e.skill),
+      ("applied", "Weisti", "Steel Rose Veteran", "Delayed Blast IV"))
+
+check("вход в игру распознан", P("You changed the connection status to Online.").kind,
+      "login")
+
+# Устойчивость: битые данные не должны ронять разбор порции.
+check("слишком длинное число не ломает разбор", to_int("9" * (MAX_DIGITS + 1)), 0)
+check("нормальное число разбирается", to_int("1" + NBSP + "234"), 1234)
+check("несуществующая дата не бросает исключение",
+      P("You inflicted 100 damage on X by using Y.", ts="2026.13.45 25:61:61").kind,
+      "damage")
+
+# Кодировка: чистый ASCII больше не объявляется utf-8.
+check("ASCII-хвост даёт системную страницу",
+      detect_encoding(b"You changed the connection status to Online." * 20),
+      system_ansi())
+check("настоящий utf-8 определяется", detect_encoding("Вы".encode("utf-8")), "utf-8")
+check("cp1251 определяется", detect_encoding("Вы".encode("cp1251")), system_ansi())
+nbsp_line = (("You inflicted 1" + NBSP + "220 damage on Training Dummy "
+              "by using Fang Strike V.").encode("cp1251"))
+check("удар с неразрывным пробелом не теряется",
+      P(nbsp_line.decode(detect_encoding(nbsp_line), "replace")).amount, 1220)
+
+print("смена персонажа и петы")
+
+cfg_l = dict(DEFAULTS)
+m_l = Meter(cfg_l)
+for i, body in enumerate([
+        "The Glory Points to be deducted for Steepeek are 280.",
+        "You changed the connection status to Online.",
+        "The Glory Points to be deducted for Weisti are 120."]):
+    m_l.feed(P(body, ts="2026.09.10 21:00:%02d" % i))
+check("перелогин переопределяет ник", m_l.self_name, "Weisti")
+
+cfg_m = dict(DEFAULTS)
+cfg_m["self_name"] = "Steepeek"
+m_m = Meter(cfg_m)
+m_m.feed(P("You changed the connection status to Online.", ts="2026.09.10 21:00:00"))
+check("ник из настроек перелогин не стирает", m_m.self_name, "Steepeek")
+
+cfg_p = dict(DEFAULTS)
+cfg_p["self_name"] = "Steepeek"
+cfg_p["hide_mobs"] = False
+m_p = Meter(cfg_p)
+for i, body in enumerate([
+        "You summoned Water Spirit by using Summon Water Spirit V.",
+        "Water Spirit inflicted 300 damage on Dummy by using Aqua Blast.",
+        "Granhildr has summoned Holy Servant to attack Dummy by using Summon Holy Servant V.",
+        "Holy Servant inflicted 900 damage on Dummy by using Holy Strike."]):
+    m_p.feed(P(body, ts="2026.09.10 21:10:%02d" % i))
+pet_rows = {r["name"]: r["total"] for r in m_p.snapshot(DAMAGE)["rows"]}
+check("свой пет идёт себе", pet_rows.get("You"), 300)
+check("чужой пет идёт своему хозяину", pet_rows.get("Granhildr"), 900)
+
+# Тик после наложения находит автора по имени скилла.
+cfg_d = dict(DEFAULTS)
+m_d = Meter(cfg_d)
+for i, body in enumerate([
+        "Steel Rose Veteran received the Delayed Blast effect because Weisti used Delayed Blast IV.",
+        "Steel Rose Veteran received 3" + NBSP + "233 damage due to the effect of Delayed Blast IV."]):
+    m_d.feed(P(body, ts="2026.09.10 21:20:%02d" % i))
+dot_rows = {r["name"]: r["total"] for r in m_d.snapshot(DAMAGE)["rows"]}
+check("тик приписан автору наложения", dot_rows.get("Weisti"), 3233)
+check("строки «(периодический)» не появилось", UNATTRIBUTED in dot_rows, False)
+
+print("приватность файла нераспознанного")
+
+from aionmeter.engine import Engine
+
+eng_chk = Engine(dict(DEFAULTS))
+for body, want in (
+        ("[3.LFG] [charname:Bigyahu;1.0 0.6 0.6]: продам меч", True),
+        ("Steepeek: го фарм", True),
+        ("You Whisper to [charname:Meleze;1.0]: hi", True),
+        ("Legion Message: сбор в 20:00", True),
+        ("Determination of Absorption II Effect has been activated.", False),
+        ("Invalid target.", False),
+        ("High Priest Esras received 745 damage due to the effect of Flame Cage V.", False)):
+    check(f"чат отсеивается: {body[:34]}", eng_chk._is_chat(body), want)
+
+print("находки аудита: атрибуция и потолки")
+
+# Потолок целей не должен терять именно босса.
+cfg_cap = dict(DEFAULTS)
+cfg_cap["hide_mobs"] = False
+m_cap = Meter(cfg_cap)
+for i in range(600):
+    m_cap.feed(P(f"You inflicted 100 damage on Mob{i} by using Fang Strike V.",
+                 ts="2026.09.10 10:%02d:%02d" % (i // 60, i % 60)))
+for i in range(20):
+    m_cap.feed(P("You inflicted 100000 damage on Ulsaruk by using Fang Strike V.",
+                 ts="2026.09.10 21:%02d:%02d" % (i // 60, i % 60)))
+a_cap = m_cap.session.actors[DAMAGE]["You"]
+check("цели в разрезе не растут без предела",
+      len(a_cap.by_target) <= a_cap.TARGET_CAP, True)
+check("босс уцелел в разрезе после переполнения",
+      a_cap.on_target("Ulsaruk"), (2000000, 20))
+cfg_cap["boss_only"] = True
+check("строка не исчезает из таблицы «только босс»",
+      len(m_cap.snapshot(DAMAGE)["rows"]), 1)
+
+# Вход в игру не стирает ник: иначе своё попадание считается дважды.
+m_log = Meter(dict(DEFAULTS, hide_mobs=False))
+m_log.feed(P("The Glory Points to be deducted for Steepeek are 280.",
+             ts="2026.09.10 21:00:00"))
+m_log.feed(P("You changed the connection status to Online.", ts="2026.09.10 21:00:01"))
+m_log.feed(P("You inflicted 500 damage on Dummy by using Fang Strike V.",
+             ts="2026.09.10 21:00:05"))
+m_log.feed(P("Steepeek inflicted 500 damage on Dummy by using Fang Strike V.",
+             ts="2026.09.10 21:00:05"))
+check("вход в игру не стирает ник", m_log.self_name, "Steepeek")
+check("эхо своего удара не удваивается",
+      {r["name"]: r["total"] for r in m_log.snapshot(DAMAGE)["rows"]}, {"You": 500})
+
+# Чужой саммон не отбирает пета с тем же именем.
+m_pet = Meter(dict(DEFAULTS, self_name="Steepeek", hide_mobs=False))
+for i, body in enumerate([
+        "You summoned Holy Servant by using Summon Holy Servant V.",
+        "Granhildr has summoned Holy Servant to attack Dummy by using Summon Holy Servant V.",
+        "Holy Servant inflicted 900 damage on Dummy by using Holy Strike."]):
+    m_pet.feed(P(body, ts="2026.09.10 21:10:%02d" % i))
+check("свой пет не уезжает чужому игроку",
+      {r["name"]: r["total"] for r in m_pet.snapshot(DAMAGE)["rows"]}, {"You": 900})
+
+# Тик с названным автором идёт автору, а не в «(периодический)».
+m_dot = Meter(dict(DEFAULTS, hide_mobs=False))
+m_dot.feed(P("Dummy received 653 poisoning damage after Weisti used Poisoning Trap V Effect.",
+             ts="2026.09.10 21:20:00"))
+dot_rows = {r["name"]: r["total"] for r in m_dot.snapshot(DAMAGE)["rows"]}
+check("тик с явным автором идёт ему", dot_rows.get("Weisti"), 653)
+check("строки «(периодический)» при явном авторе нет", UNATTRIBUTED in dot_rows, False)
+
+# Скользящее окно считается по кольцу, а не по всей сессии.
+m_ring = Meter(dict(DEFAULTS, hide_mobs=False))
+for i in range(400):
+    m_ring.feed(P("You inflicted 10 damage on Dummy by using Fang Strike V.",
+                  ts="2026.09.10 12:%02d:%02d" % (i // 60, i % 60)))
+a_ring = m_ring.session.actors[DAMAGE]["You"]
+check("кольцо короче полной раскладки", len(a_ring.recent) < len(a_ring.per_sec), True)
+check("кольцо не длиннее своего окна",
+      len(a_ring.recent) <= a_ring.RECENT_SPAN + 2, True)
+check("итог от кольца не пострадал", a_ring.total, 4000)
+
+# «Бой идёт» — про свежесть данных, а не про существование объекта.
+check("на старом логе бой не считается идущим",
+      m_ring.snapshot(DAMAGE)["active"], False)
+
+# Двухпроходный снимок: итог и доли считаются по ВСЕМ строкам.
+cfg_big = dict(DEFAULTS)
+cfg_big["hide_mobs"] = False
+cfg_big["max_rows"] = 3
+m_big = Meter(cfg_big)
+for i in range(20):
+    m_big.feed(P(f"Player{i:02d} inflicted {100 * (i + 1)} damage on Dummy by using Blaze V.",
+                 ts="2026.09.10 13:00:%02d" % i))
+snap_big = m_big.snapshot(DAMAGE)
+check("итог считается по всем строкам, а не по видимым",
+      snap_big["total"], sum(100 * (i + 1) for i in range(20)))
+check("скрытые строки посчитаны", snap_big["hidden"], 17)
+check("видимых строк ровно столько, сколько просили",
+      len([r for r in snap_big["rows"] if r["name"] not in NO_OWNER_NAMES]), 3)
+check("доля лидера считается от общей суммы",
+      round(snap_big["rows"][0]["pct"], 1), round(100.0 * 2000 / 21000, 1))
+
+print("скорость убийства босса")
+
+_cfgk = dict(DEFAULTS)
+_cfgk["self_name"] = "Steepeek"
+_cfgk["hide_mobs"] = False
+_mk = Meter(_cfgk)
+
+
+def _at(body, sec):
+    _mk.feed(P(body, ts="2026.09.10 20:%02d:%02d" % (sec // 60, sec % 60)))
+
+
+# Сорок секунд чистим аддов, потом полторы минуты бьём босса и убиваем.
+for _i in range(20):
+    _at("You inflicted 1000 damage on Small Add by using Fang Strike V.", _i * 2)
+for _i in range(30):
+    _at("You inflicted 50000 damage on Modor by using Fang Strike V.", 40 + _i * 3)
+    _at("Weisti inflicted 40000 damage on Modor by using Blaze V.", 40 + _i * 3)
+_at("You have gained 12345 XP from Modor.", 130)
+
+_snapk = _mk.snapshot(DAMAGE)
+check("главная цель определена", _snapk["boss"], "Modor")
+check("время убийства считается от первого удара ПО НЕЙ",
+      _snapk["boss_seconds"], 91)
+check("убийство записано вместе со временем",
+      _mk.session.kills[-1][0], "Modor")
+
+_fights = _mk.export_fights()
+check("бой попал в выгрузку", len(_fights), 1)
+_f = _fights[0]
+check("в бою указан босс", _f["boss"], "Modor")
+check("бой засчитан как убийство", _f["killed"], True)
+check("длительность боя — до смерти цели", _f["seconds"], 91)
+check("урон в бою — только по боссу", _f["total"], 2700000)
+check("свой урон по боссу отделён от урона за бой",
+      (_f["players"][0]["total"], _f["players"][0]["all_targets"]),
+      (1500000, 1520000))
+
+_datak = _mk.export()
+check("бои попадают в файл сессии", len(_datak.get("fights", [])), 1)
+check("убийства в файле — с временем", len(_datak["kills"][0]), 2)
+
+# Живой босс: скорости ещё нет, и выдумывать её нельзя.
+_mk2 = Meter(dict(DEFAULTS, hide_mobs=False))
+_mk2.feed(P("You inflicted 500 damage on Modor by using Fang Strike V.",
+            ts="2026.09.10 21:00:00"))
+check("у недобитой цели скорости нет", _mk2.snapshot(DAMAGE)["boss_seconds"], None)
+check("недобитый бой в выгрузке помечен", _mk2.export_fights()[0]["killed"], False)
+
+print("режим стримера")
+
+try:
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QPixmap
+    from PySide6.QtWidgets import QApplication
+    from aionmeter.overlay import Overlay
+
+    _app = QApplication.instance() or QApplication([])
+    _srow = {"name": "You", "display": "Steepeek", "cls": "RA", "cls_name": "Ranger",
+             "section": "party", "total": 8400000, "dps": 12000.0, "avg": 12000.0,
+             "hits": 200, "crit": 30.0, "max": 90000, "is_self": True,
+             "is_party": True, "skills": [], "buffs": [], "pct": 100.0, "bar": 1.0,
+             "boss_total": 4000000, "boss_hits": 100}
+    _ssnap = {"rows": [_srow], "metric": "damage", "duration": 60, "total": 8400000,
+              "loot": {}, "stats": {}, "active": True, "split": False, "hidden": 0,
+              "sections": [{"key": "all", "total": 8400000, "count": 1}]}
+    _scfg = dict(DEFAULTS)
+    _scfg["click_through"] = True
+    _scfg["transparent"] = True
+    _sov = Overlay(_FakeEngine(_ssnap), _scfg)
+    _sov.snapshot = _ssnap
+    _sov.resize(460, 300)
+
+    check("по умолчанию режим выключен", _scfg["streamer"], False)
+    _sov.action_toggle_streamer()
+    check("режим включается", _scfg["streamer"], True)
+    check("клик-сквозь снят: иначе из режима не выйти",
+          _scfg["click_through"], False)
+    check("прозрачность снята: хромакею нужен сплошной фон",
+          _scfg["transparent"], False)
+
+    _pm = QPixmap(_sov.size())
+    _sov.render(_pm)
+    _zones = [n for n, _r in _sov._hit]
+    check("в режиме остаётся только кнопка выхода", _zones, ["btn:stream_off"])
+    _exit = next(r for n, r in _sov._hit if n == "btn:stream_off")
+    check("кнопка выхода в правом верхнем углу",
+          _exit.right() > _sov.width() - 30 and _exit.top() < 30, True)
+    check("клик по ней попадает в кнопку",
+          _sov._hit_at(QPointF(_exit.center().x(), _exit.center().y())),
+          "btn:stream_off")
+    check("фон окна — цвет хромакея",
+          _pm.toImage().pixelColor(_sov.width() // 2,
+                                   _sov.height() - 20).name().lower(),
+          _scfg["chroma_color"].lower())
+
+    _sov._activate("btn:stream_off", None)
+    check("кнопка выключает режим", _scfg["streamer"], False)
+    check("клик-сквозь вернулся как был", _scfg["click_through"], True)
+    check("прозрачность вернулась как была", _scfg["transparent"], True)
+    check("для режима есть сочетание клавиш",
+          bool(DEFAULTS["hotkeys"].get("streamer")), True)
+except ImportError:
+    print("  (GUI-часть пропущена: нет PySide6)")
+
+print("подсказки у кнопок и вкладок")
+
+from aionmeter.overlay import ACTIONS, HELP, METRIC_TABS, TOOLBAR_RIGHT
+
+_missing = [f"btn:{n}" for n, _t in ACTIONS + TOOLBAR_RIGHT
+            if f"btn:{n}" not in HELP]
+check("у каждой кнопки есть подсказка", _missing, [])
+_missing_tabs = [f"metric:{k}" for k, _l in METRIC_TABS
+                 if f"metric:{k}" not in HELP]
+check("у каждой вкладки есть подсказка", _missing_tabs, [])
+check("подсказка возврата к живым данным есть", "btn:live" in HELP, True)
+_no_body = [k for k, (_t, b) in HELP.items() if not b and not k.startswith("col:")]
+check("у подсказок есть пояснение, а не одно название", _no_body, [])
+_long = [k for k, (_t, b) in HELP.items() if len(b) > 70]
+check("пояснения короткие", _long, [])
+
+try:
+    from PySide6.QtWidgets import QApplication
+    from aionmeter.overlay import Overlay
+    _app = QApplication.instance() or QApplication([])
+    _cfg_h = dict(DEFAULTS)
+    _ovh = Overlay(_FakeEngine({"rows": [], "metric": "damage", "duration": 0,
+                                "loot": {}, "total": 0, "stats": {}}), _cfg_h)
+    _ovh._hot = "btn:clear"
+    _title, _body = _ovh._tip_for("btn:clear")
+    check("в заголовке подсказки есть сочетание клавиш",
+          _cfg_h["hotkeys"]["reset"] in _title, True)
+    check("пояснение на месте", _body.startswith("Clears the table"), True)
+    check("для зоны перетаскивания подсказки нет",
+          _ovh._tip_for("drag:title"), None)
+except ImportError:
+    print("  (GUI-часть пропущена: нет PySide6)")
+
+print("открытие сохранённой сессии в обычных вкладках")
+
+_sv = Path(tempfile.mkdtemp(prefix="aionmeter-view-"))
+_old_appdata = os.environ.get("APPDATA")
+os.environ["APPDATA"] = str(_sv)
+try:
+    from aionmeter import sessions as _sess
+    _data = {
+        "start": 1757530000, "end": 1757533600, "duration": 3600, "boss": "Modor",
+        "kill_count": 14, "total": 17000000, "self_name": "Steepeek",
+        "self_class": "RA", "you": {"total": 9000000, "avg": 2500.0, "boss": 6000000},
+        "party": ["Weisti"], "loot": {"exp": 500000},
+        "damage": [
+            {"name": "You", "cls": "RA", "total": 9000000, "hits": 900, "crits": 300,
+             "max": 90000, "active": 3600, "avg": 2500.0,
+             "skills": [["Fang Strike V", 3000000]],
+             "targets": [["Modor", 6000000], ["Add", 3000000]]},
+            {"name": "Weisti", "cls": "WI", "total": 8000000, "hits": 700, "crits": 70,
+             "max": 120000, "active": 3600, "avg": 2222.0,
+             "skills": [["Blaze V", 4000000]], "targets": [["Modor", 5000000]]}],
+        "heal": [{"name": "Weisti", "cls": "WI", "total": 300000, "hits": 40,
+                  "crits": 0, "max": 8000, "active": 3600, "avg": 83.0,
+                  "skills": [], "targets": []}],
+        "taken": [{"name": "You", "cls": "RA", "total": 1200000, "hits": 300,
+                   "crits": 0, "max": 30000, "active": 3600, "avg": 333.0,
+                   "skills": [], "targets": []}],
+    }
+    _path = _sess.save(_data, dict(DEFAULTS))
+    check("сессия сохранена", bool(_path), True)
+
+    from PySide6.QtWidgets import QApplication
+    from aionmeter.overlay import Overlay
+    _app = QApplication.instance() or QApplication([])
+    _cfg = dict(DEFAULTS)
+    _ov2 = Overlay(_FakeEngine({"rows": [], "metric": "damage", "duration": 0,
+                                "loot": {}, "total": 0, "stats": {}}), _cfg)
+    _ov2.set_metric("sessions")
+    _ov2._sessions_at = 0.0
+    _ov2._refresh()
+    _rows = _ov2.snapshot["rows"]
+    check("сессия видна в списке", len(_rows), 1)
+
+    _ov2.open_session(_rows[0]["name"])
+    check("клик уводит на вкладку урона", _cfg["metric"], "damage")
+    check("урон загружен из файла", _ov2.snapshot["total"], 17000000)
+    check("строки игроков на месте", len(_ov2.snapshot["rows"]), 2)
+    check("свой разбор по скиллам подгрузился",
+          _ov2.snapshot["rows"][0]["skills"], [("Fang Strike V", 3000000)])
+    check("крит посчитан из сохранённого",
+          round(_ov2.snapshot["rows"][0]["crit"]), 33)
+    check("подпись открытой сессии есть",
+          bool(_ov2.snapshot.get("saved_label")), True)
+    check("бой не считается идущим", _ov2.snapshot["active"], False)
+
+    _ov2.set_metric("heal")
+    _ov2._refresh()
+    check("хил берётся из той же сессии", _ov2.snapshot["total"], 300000)
+    _ov2.set_metric("taken")
+    _ov2._refresh()
+    check("полученный урон тоже", _ov2.snapshot["total"], 1200000)
+
+    _ov2.close_session_view()
+    check("возврат к живым данным", _ov2.snapshot.get("saved_label"), None)
+finally:
+    if _old_appdata is None:
+        os.environ.pop("APPDATA", None)
+    else:
+        os.environ["APPDATA"] = _old_appdata
+    for _f in sorted(_sv.rglob("*"), reverse=True):
+        try:
+            _f.unlink() if _f.is_file() else _f.rmdir()
+        except OSError:
+            pass
+    try:
+        _sv.rmdir()
+    except OSError:
+        pass
+
+print("привязка к клиенту Origin")
+
+from aionmeter.config import ORIGIN_MAGIC, is_origin_client
+
+_org = Path(tempfile.mkdtemp(prefix="aionmeter-origin-"))
+(_org / "Data" / "Items").mkdir(parents=True, exist_ok=True)
+(_org / "Data" / "Items" / "items.pak").write_bytes(ORIGIN_MAGIC + b"x" * 64)
+check("клиент с паками Origin опознан", is_origin_client(str(_org)), True)
+
+_alien = Path(tempfile.mkdtemp(prefix="aionmeter-alien-"))
+(_alien / "Data" / "Items").mkdir(parents=True, exist_ok=True)
+(_alien / "Data" / "Items" / "items.pak").write_bytes(b"PK" + b"x" * 64)
+check("обычный ZIP-пак Origin-ом не считается", is_origin_client(str(_alien)), False)
+check("пустой путь не опознан", is_origin_client(""), False)
+
+for _tmp in (_org, _alien):
+    for _f in sorted(_tmp.rglob("*"), reverse=True):
+        try:
+            _f.unlink() if _f.is_file() else _f.rmdir()
+        except OSError:
+            pass
+    try:
+        _tmp.rmdir()
+    except OSError:
+        pass
+
+print("язык интерфейса")
+
+from aionmeter import skilldb as _sk
+check("названия классов английские", _sk.CLASSES["RA"], "Ranger")
+check("все классы без кириллицы",
+      any(any("Ѐ" <= ch <= "ӿ" for ch in v) for v in _sk.CLASSES.values()),
+      False)
+
+print("шапка с названием и версия в подвале")
+
+from aionmeter.version import STAGE, display as version_display
+
+check("версия показывается со стадией", version_display(), f"0.1.0 {STAGE}")
+check("стадия — бета", STAGE, "beta")
+
+try:
+    from PySide6.QtCore import QPointF
+    from PySide6.QtWidgets import QApplication
+    from aionmeter.overlay import APP_NAME, Overlay
+
+    _app = QApplication.instance() or QApplication([])
+    _ov = Overlay(_FakeEngine({"rows": [], "metric": "damage", "duration": 0,
+                               "loot": {}, "total": 0, "stats": {}}), dict(DEFAULTS))
+    _ov.resize(460, 560)
+    _ov.snapshot = {"rows": [], "metric": "damage", "duration": 0, "loot": {},
+                    "total": 0, "stats": {}}
+    check("название программы", APP_NAME, "Wingbeat")
+    check("заголовок окна назван программой", _ov.windowTitle(), "Wingbeat")
+    check("полоса заголовка занимает место", _ov.TITLE_H > 0, True)
+    check("обвязка учитывает полосу заголовка",
+          _ov.chrome_h > _ov.HEAD_H + _ov.ACT_H + _ov.STATS_H, True)
+
+    # Клики должны попадать в кнопки, а не промахиваться на высоту полосы.
+    from PySide6.QtGui import QPixmap
+    _pm = QPixmap(_ov.size())
+    _ov.render(_pm)
+    _inset = _ov.frame_inset()
+    _tabs = [(n, r) for n, r in _ov._hit if n.startswith("metric:")]
+    check("вкладки зарегистрированы", len(_tabs) >= 4, True)
+    _name, _rect = _tabs[1]
+    _point = QPointF(_rect.center().x() + _inset,
+                     _rect.center().y() + _inset + _ov.TITLE_H)
+    check("клик по вкладке попадает в неё", _ov._hit_at(_point), _name)
+    _btn = [(n, r) for n, r in _ov._hit if n == "btn:clear"]
+    if _btn:
+        _point = QPointF(_btn[0][1].center().x() + _inset,
+                         _btn[0][1].center().y() + _inset + _ov.TITLE_H)
+        check("клик по кнопке попадает в неё", _ov._hit_at(_point), "btn:clear")
+except ImportError:
+    print("  (GUI-часть пропущена: нет PySide6)")
 
 print()
 print(f"пройдено {ok}, провалено {fail}")

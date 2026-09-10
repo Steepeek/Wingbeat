@@ -37,7 +37,7 @@ NUM = r"[0-9][0-9" + re.escape(THOUSANDS) + r"]*"
 
 #: Имя актора: без скобок и двоеточий. Это и есть анти-спуфинг — строка чата
 #: всегда содержит "[" или ":" перед текстом игрока.
-NAME = r"[^\[\]:;]{1,32}?"
+NAME = r"[^\[\]:;]{1,64}?"
 
 #: Метка времени записи: "YYYY.MM.DD HH:MM:SS" + " : " на позициях [19:22].
 TS_RE = re.compile(r"^\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2}$")
@@ -77,7 +77,19 @@ RE_RECV = re.compile(
     r"(?P<target>" + NAME + r") received "
     r"(?P<amount>" + NUM + r") (?:critical |bleeding |poisoning )?damage "
     r"(?:from (?P<actor>" + NAME + r")"
+    r"|after (?P<actor2>" + NAME + r") used (?P<skill2>.+?)"
     r"|due to (?:the effect of )?(?P<effect>.+?))\.$"
+)
+
+# «Loluu used Aegis Breaker I to deal Terath Vanquisher 3 451 damage and
+# dispel some magical buffs.» Порядок здесь обратный обычному: имя цели
+# стоит ПЕРЕД числом, поэтому отдельным шаблоном. У части мобов клиент
+# ставит двойной пробел перед числом — отсюда \s+.
+RE_DISPEL_HIT = re.compile(
+    r"^" + _CRIT +
+    r"(?P<actor>" + NAME + r") used (?P<skill>.+?) to deal "
+    r"(?:(?P<selftarget>you)|(?P<target>.+?))\s+"
+    r"(?P<amount>" + NUM + r") damage and dispel"
 )
 
 # "You restored 102 of Weisti's HP by using Light of Rejuvenation V."
@@ -195,6 +207,24 @@ RE_SUMMON = re.compile(
 )
 RE_UNSUMMON = re.compile(r"^(?:You unsummon (?P<pet>.+?)|(?P<pet2>.+?) has been dismissed)\.$")
 
+# Саммон в третьем лице, две формы клиента:
+#   «Granhildr has summoned Holy Servant to attack X by using Summon ... V.»
+#   «Sarah summoned Healing Servant by using Summon Healing Servant I.»
+RE_SUMMON_OTHER = re.compile(
+    r"^(?P<owner>" + NAME + r") (?:has )?summoned (?P<pet>.+?)"
+    r"(?: to attack (?:.+?))?"
+    r"(?: by using (?P<skill>.+?))?\.$"
+)
+
+# «Terath Vanquisher received the Delayed Blast effect because Loluu used
+# Lava Tsunami I.» Единственная строка, из которой можно узнать автора у
+# скиллов, тикающих без прямого удара: на живом логе это 5221 запись и
+# около 17M урона, до сих пор уезжавшего в «(periodic)».
+RE_EFFECT_BECAUSE = re.compile(
+    r"^(?P<target>" + NAME + r") received the (?P<effect>.+?) effect "
+    r"because (?P<actor>" + NAME + r") used (?P<skill>.+?)\.$"
+)
+
 # Собственная реплика в чате идёт БЕЗ обёртки [charname:] — в отличие от чужих.
 # Это самый надёжный способ узнать свой ник:
 #   чужие:  [3.LFG] [charname:Zuzia;1.0 0.69 0.69]: текст
@@ -207,16 +237,32 @@ RE_GLORY = re.compile(
     r"^The Glory Points to be deducted for (?P<me>" + NAME + r") are "
 )
 
+# Вход в игру. Сам по себе ника не несёт, но говорит: с этого момента за
+# «You» может стоять уже ДРУГОЙ персонаж. Без него метр, один раз узнав
+# ник, держался за него до перезапуска — и на твинке приписывал его удары
+# отдельной строкой рядом с «You».
+RE_LOGIN = re.compile(r"^You changed the connection status to Online\.$")
+
 SELF = "You"
 
 _TRANS_THOUSANDS = str.maketrans("", "", THOUSANDS)
+
+
+#: Потолок длины числа. Самый большой удар в игре — семь знаков, у
+#: фиктивных чисел щита-отражателя тоже семь. Пятнадцать берём с запасом.
+#: Без потолка строка из тысяч цифр (битый лог, чужая подделка) бросала
+#: ValueError и обрывала разбор всей прочитанной порции.
+MAX_DIGITS = 15
 
 
 def to_int(s: str | None) -> int:
     """Число урона -> int. Снимает любые разделители тысяч."""
     if not s:
         return 0
-    return int(s.translate(_TRANS_THOUSANDS))
+    digits = s.translate(_TRANS_THOUSANDS)
+    if len(digits) > MAX_DIGITS:
+        return 0
+    return int(digits)
 
 
 # --- события --------------------------------------------------------------
@@ -248,7 +294,14 @@ def ts_to_epoch(ts: str) -> int:
     day = ts[:10]
     base = _day_cache.get(day)
     if base is None:
-        base = int(datetime(int(day[0:4]), int(day[5:7]), int(day[8:10])).timestamp())
+        try:
+            base = int(datetime(int(day[0:4]), int(day[5:7]),
+                                int(day[8:10])).timestamp())
+        except ValueError:
+            # Число вида «2026.13.45» формой проходит, а датой не является.
+            # Такое встречается в битом логе; ронять из-за него разбор
+            # нельзя, поэтому запоминаем ноль и идём дальше.
+            base = 0
         _day_cache[day] = base
     return base + int(ts[11:13]) * 3600 + int(ts[14:16]) * 60 + int(ts[17:19])
 
@@ -305,6 +358,15 @@ def parse(ts: str, body: str) -> Event | None:
             extra="reflect" if m["reflect"] else "",
         )
 
+    m = RE_DISPEL_HIT.match(body)
+    if m:
+        target = SELF if m["selftarget"] else m["target"]
+        return Event(
+            "damage", ts_to_epoch(ts), actor=m["actor"], target=target,
+            amount=to_int(m["amount"]), crit=bool(m["crit"]),
+            skill=m["skill"], incoming=bool(m["selftarget"]),
+        )
+
     m = RE_RECV.match(body)
     if m:
         t = ts_to_epoch(ts)
@@ -314,6 +376,15 @@ def parse(ts: str, body: str) -> Event | None:
             return Event(
                 "damage", t, actor=m["actor"], target=m["target"],
                 amount=amount, crit=bool(m["crit"]), incoming=True,
+            )
+        if m["actor2"]:
+            # «<T> received N poisoning damage after you used <S>.»
+            # Автор назван, значит это обычный урон по цели, а не сирота:
+            # у рейнджера так тикают ловушки и кровотечения.
+            actor = m["actor2"]
+            return Event(
+                "dot", t, actor=SELF if actor.lower() == "you" else actor,
+                target=m["target"], amount=amount, extra=m["skill2"] or "",
             )
         # Периодический урон. Владельца в шаблоне физически нет.
         return Event(
@@ -393,6 +464,18 @@ def parse(ts: str, body: str) -> Event | None:
         return Event("applied", ts_to_epoch(ts), actor=m["actor"],
                      target=m["target"], skill=m["skill"], extra="continuous damage")
 
+    m = RE_EFFECT_BECAUSE.match(body)
+    if m:
+        # Ключ атрибуции — имя СКИЛЛА, а не эффекта. Проверено на живом
+        # логе: строка наложения говорит «received the Delayed Blast effect
+        # because Weisti used Delayed Blast IV», а тик приходит как «due to
+        # the effect of Delayed Blast IV» — то есть под именем скилла с
+        # рангом. По названию эффекта («Delayed Blast») тик не нашёлся бы.
+        actor = m["actor"]
+        return Event("applied", ts_to_epoch(ts),
+                     actor=SELF if actor.lower() == "you" else actor,
+                     target=m["target"], skill=m["skill"], extra=m["effect"])
+
     m = RE_ITEM_USED.match(body)
     if m:
         return Event("used_item", ts_to_epoch(ts), actor=SELF, skill=m["item"])
@@ -417,7 +500,14 @@ def parse(ts: str, body: str) -> Event | None:
 
     m = RE_SUMMON.match(body)
     if m:
-        return Event("summon", ts_to_epoch(ts), target=m["pet"], extra="add")
+        return Event("summon", ts_to_epoch(ts), actor=SELF, target=m["pet"],
+                     extra="add")
+    m = RE_SUMMON_OTHER.match(body)
+    if m:
+        owner = m["owner"]
+        return Event("summon", ts_to_epoch(ts),
+                     actor=SELF if owner.lower() == "you" else owner,
+                     target=m["pet"], extra="add")
     m = RE_UNSUMMON.match(body)
     if m:
         return Event("summon", ts_to_epoch(ts), target=m["pet"] or m["pet2"], extra="del")
@@ -430,6 +520,9 @@ def parse(ts: str, body: str) -> Event | None:
             return Event("party", ts_to_epoch(ts), target=m["who"], extra=sub)
     if RE_PARTY_SELF_LEAVE.match(body):
         return Event("party", ts_to_epoch(ts), extra="disband")
+
+    if RE_LOGIN.match(body):
+        return Event("login", ts_to_epoch(ts))
 
     m = RE_GLORY.match(body)
     if m:
