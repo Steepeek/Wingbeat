@@ -1605,6 +1605,37 @@ try:
         _point = QPointF(_btn[0][1].center().x() + _inset,
                          _btn[0][1].center().y() + _inset + _ov.TITLE_H)
         check("клик по кнопке попадает в неё", _ov._hit_at(_point), "btn:clear")
+
+    # Возврат из фонового потока. QTimer.singleShot, заведённый внутри
+    # обычного threading.Thread, не срабатывает никогда: у такого потока
+    # нет цикла событий Qt, и форма обратной связи оставалась висеть в
+    # «Sending…», а уведомление о новой версии не показывалось вовсе.
+    import threading as _th
+    import time as _time
+    from PySide6.QtCore import QObject as _QObject, QTimer as _QTimer, Signal as _Signal
+
+    class _Probe(_QObject):
+        ready = _Signal(bool, str)
+
+    _probe = _Probe()
+    _got: list = []
+    _probe.ready.connect(lambda ok, msg: _got.append((ok, msg)))
+    _th.Thread(target=lambda: _probe.ready.emit(True, "sent"), daemon=True).start()
+    _until = _time.monotonic() + 3
+    while not _got and _time.monotonic() < _until:
+        _app.processEvents()
+    check("ответ из фонового потока доходит сигналом", _got, [(True, "sent")])
+
+    _late: list = []
+    _th.Thread(target=lambda: _QTimer.singleShot(0, lambda: _late.append(1)),
+               daemon=True).start()
+    _until = _time.monotonic() + 1
+    while _time.monotonic() < _until:
+        _app.processEvents()
+    check("таймер из чужого потока не срабатывает (потому и сигнал)", _late, [])
+
+    from wingbeat.feedback_dialog import FeedbackDialog as _FD
+    check("у формы обратной связи есть сигнал ответа", hasattr(_FD, "replied"), True)
 except ImportError:
     print("  (GUI-часть пропущена: нет PySide6)")
 

@@ -17,7 +17,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "windows:fontengine=freetype")
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtCore import QObject, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
@@ -28,6 +28,19 @@ from wingbeat.engine import Engine
 from wingbeat.overlay import APP_NAME, Overlay, make_icon
 from wingbeat.settings_dialog import SettingsDialog
 from wingbeat.version import __version__, display as version_display
+
+
+class Bridge(QObject):
+    """Возврат из фоновых потоков в главный.
+
+    QTimer.singleShot, заведённый внутри обычного threading.Thread, не
+    срабатывает никогда: у такого потока нет цикла событий Qt. Сигнал
+    же Qt доставляет в поток получателя сам, поэтому проверка версий и
+    любая другая фоновая работа отвечают именно через него.
+    """
+
+    update_found = Signal(object)
+    notice = Signal(str)
 
 
 class App:
@@ -54,6 +67,10 @@ class App:
         self.overlay.show()
         self.overlay.apply_window_flags()
         self.overlay.setup_hotkeys()
+
+        self.bridge = Bridge()
+        self.bridge.update_found.connect(self._show_update)
+        self.bridge.notice.connect(self._notice)
 
         self._build_tray()
         self._start_or_configure()
@@ -87,12 +104,9 @@ class App:
         if not self.cfg.get("check_updates", True):
             return
 
-        def announce(info: dict) -> None:
-            # Колбэк приходит из фонового потока: трогать Qt оттуда нельзя,
-            # поэтому перебрасываем в главный через однократный таймер.
-            QTimer.singleShot(0, lambda: self._show_update(info))
-
-        updates.check_async(announce)
+        # Колбэк приходит из фонового потока, поэтому наружу уходит
+        # только сигнал — доставку в главный поток берёт на себя Qt.
+        updates.check_async(self.bridge.update_found.emit)
 
     def _show_update(self, info: dict) -> None:
         applog.log.info("update available: %s (running %s)", info["tag"], __version__)
@@ -102,22 +116,19 @@ class App:
             QSystemTrayIcon.Information, 10000)
         self._update_info = info
 
+    def _notice(self, msg: str) -> None:
+        self.tray.showMessage(APP_NAME, msg, QSystemTrayIcon.Information, 6000)
+
     def _check_updates_now(self) -> None:
         """Ручная проверка: в отличие от фоновой, отвечает и когда всё свежее."""
-        def done(info: dict) -> None:
-            QTimer.singleShot(0, lambda: self._show_update(info))
-
         def run() -> None:
             info = updates.fetch()
             if info is None:
-                msg = "Could not check — no connection to GitHub."
+                self.bridge.notice.emit("Could not check — no connection to GitHub.")
             elif updates.is_newer_than_current(info["tag"]):
-                done(info)
-                return
+                self.bridge.update_found.emit(info)
             else:
-                msg = f"You are on the latest version ({__version__})."
-            QTimer.singleShot(0, lambda: self.tray.showMessage(
-                APP_NAME, msg, QSystemTrayIcon.Information, 6000))
+                self.bridge.notice.emit(f"You are on the latest version ({__version__}).")
 
         import threading
         threading.Thread(target=run, name="update-manual", daemon=True).start()

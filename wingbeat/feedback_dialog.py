@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QDialog, QFileDialog, QHBoxLayout, QLabel,
                                QLineEdit, QMessageBox, QPlainTextEdit,
                                QPushButton, QVBoxLayout)
@@ -41,8 +41,15 @@ QPushButton[role="send"]:hover { background:#36472f; }
 
 
 class FeedbackDialog(QDialog):
+    #: Ответ сервера приходит из фонового потока. Сигнал — единственный
+    #: законный способ вернуться в главный: QTimer.singleShot, заведённый
+    #: в обычном threading.Thread, не сработает никогда — у такого потока
+    #: нет цикла событий Qt, и таймер просто некому обслужить.
+    replied = Signal(bool, str)
+
     def __init__(self, cfg: dict, parent=None):
         super().__init__(parent)
+        self.replied.connect(self._done)
         self.cfg = cfg
         self.shot_path: Path | None = None
 
@@ -180,9 +187,9 @@ class FeedbackDialog(QDialog):
 
         def work() -> None:
             ok, message = post(self.cfg, payload)
-            # Ответ приходит из фонового потока, а трогать окно можно
-            # только из главного — перебрасываем через таймер.
-            QTimer.singleShot(0, lambda: self._done(ok, message))
+            # Трогать окно из чужого потока нельзя, поэтому наружу уходит
+            # только сигнал — Qt доставит его в главный поток сам.
+            self.replied.emit(ok, message)
 
         threading.Thread(target=work, name="feedback", daemon=True).start()
 
