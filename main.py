@@ -139,6 +139,7 @@ class App:
         menu.addAction("Streamer mode", self.overlay.action_toggle_streamer)
         menu.addSeparator()
         menu.addAction("Settings…", self.open_settings)
+        menu.addAction("Send feedback…", self.open_feedback)
         menu.addAction("Open log folder", self._open_log_folder)
         menu.addAction("About Wingbeat", self.open_about)
         self.act_update = menu.addAction("Check for updates",
@@ -181,6 +182,19 @@ class App:
             self.tray.showMessage(APP_NAME, self.engine.error,
                                   QSystemTrayIcon.Warning, 5000)
             self.open_settings(first_run=True)
+
+    def open_feedback(self) -> None:
+        """Форма обратной связи. Как и прочие окна — поверх метра."""
+        from wingbeat.feedback_dialog import FeedbackDialog
+        self.overlay.suspend_topmost(True)
+        dlg = FeedbackDialog(self.cfg, parent=self.overlay)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        try:
+            dlg.exec()
+        finally:
+            self.overlay.suspend_topmost(False)
 
     def open_about(self) -> None:
         """Окно «О программе». Как и настройки — поверх метра."""

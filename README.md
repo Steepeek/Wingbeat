@@ -271,6 +271,20 @@ class — there is no skill name in the log to go on.
 
 ---
 
+## Found a bug?
+
+There is a form inside the program: **About → Send feedback**, or *Send
+feedback…* in the tray menu. Two fields and an optional screenshot — it goes
+straight to the author, no account and no issue tracker needed.
+
+![feedback form](docs/feedback.png)
+
+If you would rather use GitHub, [open an issue](../../issues) instead. Either
+way, the log folder usually holds the other half of the story — the About window
+has a button that opens it.
+
+---
+
 ## Privacy
 
 The meter reads your chat log, which is a position of trust, so it is worth

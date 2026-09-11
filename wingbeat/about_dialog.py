@@ -128,15 +128,26 @@ class AboutDialog(QDialog):
         """Папки, которые просят приложить к сообщению о проблеме."""
         row = QHBoxLayout()
         row.setSpacing(8)
+        fb_btn = QPushButton("Send feedback")
+        fb_btn.clicked.connect(self.open_feedback)
         log_btn = QPushButton("Open log folder")
         log_btn.clicked.connect(
             lambda: self._open(applog.path().parent))
         sess_btn = QPushButton("Open sessions folder")
         sess_btn.clicked.connect(lambda: self._open(sessmod.sessions_dir()))
+        row.addWidget(fb_btn)
         row.addWidget(log_btn)
         row.addWidget(sess_btn)
         row.addStretch(1)
         return row
+
+    def open_feedback(self) -> None:
+        """Форма обратной связи поверх этого окна."""
+        from .config import load as load_cfg
+        from .feedback_dialog import FeedbackDialog
+
+        dlg = FeedbackDialog(load_cfg(), parent=self)
+        dlg.exec()
 
     # -- мелочи --
 
