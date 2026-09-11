@@ -67,7 +67,43 @@ def main() -> int:
     out = HERE / "out" / f"WingbeatSetup-{__version__}.exe"
     if out.is_file():
         print(f"\nГотово: {out}  ({out.stat().st_size / 1024 / 1024:.0f} МБ)")
+
+    archive = pack_zip()
+    print(f"Готово: {archive}  ({archive.stat().st_size / 1024 / 1024:.0f} МБ)")
+    print(f"Готово: {write_sums([out, archive])}")
     return 0
+
+
+def pack_zip() -> Path:
+    """Тот же набор файлов, что и в установщике, только распакованный.
+
+    Раньше архив и контрольные суммы собирались руками, и однажды это
+    стоило неверного выпуска: под тегом оказалась сборка, в которой не
+    было половины последних правок. Теперь их делает тот же запуск и из
+    той же папки dist, что и установщик, — разойтись они уже не могут.
+    """
+    archive = HERE / "out" / f"Wingbeat-{__version__}.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+        for item in sorted(DIST.rglob("*")):
+            if item.is_file():
+                z.write(item, Path("Wingbeat") / item.relative_to(DIST))
+    return archive
+
+
+def write_sums(files: list[Path]) -> Path:
+    """SHA-256 обоих файлов в формате, который понимает sha256sum -c."""
+    lines = []
+    for path in files:
+        if not path.is_file():
+            continue
+        digest = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+        lines.append(f"{digest.hexdigest()}  {path.name}")
+    sums = HERE / "out" / "SHA256SUMS.txt"
+    sums.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return sums
 
 
 if __name__ == "__main__":

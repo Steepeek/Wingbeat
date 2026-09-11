@@ -1567,9 +1567,13 @@ check("все классы без кириллицы",
 
 print("шапка с названием и версия в подвале")
 
-from wingbeat.version import STAGE, display as version_display
+from wingbeat.version import STAGE, __version__ as _ver, display as version_display
 
-check("версия показывается со стадией", version_display(), f"0.1.0 {STAGE}")
+# Сверяем с самой версией, а не с записанным числом: иначе проверка
+# падает при каждом выпуске и её начинают править механически.
+check("версия показывается со стадией", version_display(), f"{_ver} {STAGE}")
+check("номер версии — три числа через точку",
+      all(part.isdigit() for part in _ver.split(".")) and _ver.count(".") == 2, True)
 check("стадия — бета", STAGE, "beta")
 
 try:
