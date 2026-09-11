@@ -334,8 +334,13 @@ py installer/make.py   # installer/out/WingbeatSetup-<version>.exe
 The installer needs [Inno Setup 6](https://jrsoftware.org/isdl.php).
 
 Note that `assets/` is not in this repository: icons and item names are
-extracted from your own game client, and they belong to NCSoft. A build without
-them runs, but shows no icons and no item names.
+extracted from a game client, and they belong to NCSoft. A build without them
+runs fine — damage, DPS and rankings are unaffected — it simply shows no skill
+icons and no item names.
+
+The released installer does ship with that pack, so that the meter looks
+complete out of the box. You already own the same files: they come from the
+client you play on.
 
 ---
 
@@ -344,6 +349,7 @@ them runs, but shows no icons and no item names.
 MIT — see [LICENSE](LICENSE).
 
 Aion and its images and names are the property of NCSoft. They are not in this
-repository, and the MIT license does not extend to them.
+repository, and the MIT license does not extend to them — including the asset
+pack that ships inside the installer.
 
 Made by Steepeek for Aion Origin · [wingbeat.fun](https://wingbeat.fun)
