@@ -7,6 +7,7 @@ wingbeat/version.py, чтобы номер в «Программах и комп
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -21,9 +22,13 @@ HERE = ROOT / "installer"
 DIST = ROOT / "dist" / "Wingbeat"
 
 #: Где Inno Setup лежит по умолчанию. ISCC в PATH попадает редко.
+#: Установка через winget кладёт его не в Program Files, а в профиль
+#: пользователя — без этого пути сборка установщика на чистой машине
+#: не находит компилятор, хотя он стоит.
 CANDIDATES = (
     Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"),
     Path(r"C:\Program Files\Inno Setup 6\ISCC.exe"),
+    Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Inno Setup 6" / "ISCC.exe",
 )
 
 

@@ -1,431 +1,335 @@
 # Wingbeat
 
-Счётчик урона для Aion. Читает `Chat.log`, который клиент пишет сам, и показывает
-таблицу поверх игры: урон, DPS, доля, удары, криты — по себе, группе и петам.
+A damage meter for **Aion Origin**. It reads `Chat.log` — the file your client
+already writes — and shows what actually happened in the fight: damage, DPS,
+share, hits and crits, for you, your group and your pets.
 
-В игру не лезет: не читает её память, ничего в неё не внедряет и ничего не пишет
-в папку игры. Открывает один файл на чтение — и всё.
+It never touches the game. No memory reading, nothing injected, nothing written
+into the game folder. One file opened for reading, and that is all.
 
-![оверлей](docs/overlay.png)
+![the overlay during a boss fight](docs/overlay.png)
 
-## Для какого клиента
+---
 
-**Только для сервера Aion Origin и только для английского клиента.**
+## Which client
 
-Метр проверяет клиент при запуске и на другой сборке честно отказывается
-считать, а не показывает молча нули. Причина простая: боевые строки лога
-разбираются по грамматике, снятой с конкретного клиента, — на другой версии
-и на другом языке они выглядят иначе, и любые цифры были бы выдумкой.
+**Aion Origin only, English client only.**
 
-Поддержку других серверов и языков в принципе можно добавить, но пока её нет,
-и обещать её незачем.
+The meter checks the client at startup and refuses to count on anything else
+instead of quietly showing zeros. The reason is simple: combat lines are parsed
+against a grammar taken from this exact client. On another version, or in
+another language, those lines look different — and any numbers would be made up.
 
-## Что умеет
+Other servers and languages can be added later. They are not supported now, and
+pretending otherwise would only waste your evening.
 
-- **Старт, Стоп, Очистить** — кнопками на панели. Счёт копится, пока не
-  нажать очистку, поэтому цифры не пропадают между боями.
-- **Один список без фильтров.** Показываются все, кто наносил урон;
-  своя строка помечена оранжевым капом слева и полужирным ником.
-- **Рельс вместо заливки строки.** Полоса — 3 px по нижней кромке, цвета
-  класса, длиной в долю от лидера. Текст при этом никогда не оказывается
-  на цветном фоне и читается поверх любой картинки игры.
-- **Нить темпа** — тонкая линия внутри рельса: длиной в текущий DPS
-  относительно лидера. Длиннее рельса значит «разгоняется», короче —
-  «сдулся». Такого нет ни у Details, ни у Skada, ни у Kagerou: они
-  показывают только накопленное.
-- **Высота окна по содержимому.** Растёт сразу, уменьшается только после
-  трёх секунд тишины, потолок — та высота, которую растянули руками.
-- **Разбор по скиллам.** Клик по строке раскрывает, чем именно бьёт игрок:
-  каждый скилл с суммой и долей, автоатаки отдельно.
-- **Добыча за сессию** строкой внизу: опыт, AP, кинара, убитые мобы,
-  PvP-убийства, смерти.
-- **Вкладка «Добыча»** рядом с уроном: кто из группы сколько предметов
-  подобрал, а по клику — что именно, с названиями и цветом качества.
-- **Периодический урон приписывается автору.** Тик дота в логе автора не
-  содержит, но его можно взять с момента наложения — см. ниже.
-- **Только урон по боссу.** Галочка в меню окна (три полоски справа) и в
-  настройках. Главная цель боя — та, по которой набито больше всего урона;
-  урон по аддам в таблицу не идёт, доли пересчитываются от неё же. Имя цели
-  показывается в подвале, чтобы было видно, что именно метр считает боссом.
-- **Вкладка «Сессии».** Сессия начинается с первого удара и закрывается
-  кнопкой «Очистить» или выходом из программы. Закрытая ложится файлом в
-  `%APPDATA%\Wingbeat\sessions`; клик по строке показывает, кто в ней был
-  и сколько набил.
-- Пять вкладок: урон, хил, полученный урон, добыча, сессии
-- Текущий DPS по скользящему окну и средний по активному времени
-- Урон питомцев приписывается владельцу
-- **Класс каждого игрока** определяется по использованным скиллам, строка
-  красится в цвет класса
-- Свой ник определяется сам (по строке про Glory Points при входе в игру)
-  и показывается в таблице вместо «You»
-- Копирование результата в буфер в виде, готовом для игрового чата:
-  `Урон 2:14 | Steepeek 8.40M (1 825 dps) | Weisti 5.58M (1 800 dps)`,
-  с разбивкой по лимиту строки
-- Обычное непрозрачное окно; прозрачность и клик-сквозь включаются отдельно
-- Глобальные хоткеи: работают, не переключаясь из игры
+---
 
-## Чего не умеет — и не сможет
+## What it shows
 
-Это ограничения самого лога, а не программы. Их нет смысла обходить.
+**One list, no filters.** Everyone who dealt damage is in it. Your own row is
+marked with an orange cap on the left and a bold name.
 
-- **Нет HP цели** и процента её здоровья. Значит нет полосы босса и нет учёта
-  оверкилла: последний удар засчитывается целиком.
-- **Точность времени — одна секунда.** Погрешность текущего DPS примерно 1/окно:
-  на окне 10 с это около 10%. Пиковый DPS без указания окна сравнивать
-  с чужими метрами бессмысленно — цифры не сойдутся.
-- **Согруппника от постороннего по строке урона отличить нельзя** — текст
-  у обоих одинаковый. Поэтому метр и не пытается: список общий.
-- **Появление врага заранее не определить.** Игра не пишет в лог появление
-  игрока чужой фракции, и фракции в логе нет вообще: «Puller» и союзник
-  выглядят одинаково, пока не ударят. Видно только тех, кто уже вступил
-  в бой в поле зрения.
-- **Имя скилла есть только у скилловых ударов.** У автоатак его в логе нет
-  вовсе, поэтому в разборе они идут одной строкой «автоатака».
-- **Видно только то, что видит клиент.** Урон за пределами прорисовки в лог
-  не попадает, и доля считается от увиденного.
+**A rail, not a filled bar.** The coloured strip is 3 px along the bottom edge
+of the row, in your class colour, as long as your share of the leader. Text
+never sits on a coloured background, so it stays readable over anything the game
+draws underneath.
 
-## Как считается периодический урон
+**A pace thread** runs inside that rail: its length is your *current* DPS
+relative to the leader's. Longer than the rail means you are speeding up,
+shorter means you are falling off. Details, Skada and Kagerou do not show this —
+they only show what has accumulated.
 
-Тик дота в логе выглядит так:
-
-```
-High Priest Esras received 745 damage due to the effect of Flame Cage V.
-```
-
-Автора в этой строке нет — ни в одном варианте шаблона клиента. Зато он есть
-в момент наложения:
-
-```
-Loluu inflicted 1 234 damage on High Priest Esras by using Flame Cage V.
-High Priest Esras is in the burning state because Loluu used Flame Cage V.
-```
-
-Метр запоминает, кто последним применил скилл к этой цели, и приписывает
-последующие тики ему. **Если два сорка перебивают доты друг друга, урон
-уходит тому, кто наложил позже** — и это не догадка, а механика игры:
-новый дот заменяет старый, тикает именно последний.
-
-Если автора взять неоткуда (часть скиллов вроде `Lava Tsunami` тикает вообще
-без строки прямого удара), но скилл есть в базе классов и в бою ровно один
-игрок этого класса — урон уходит ему. Иначе остаётся строка
-`(периодический)`: туда попадают проки с годстоунов вроде
-`Magical Water Damage Effect`, у которых владельца нет в принципе.
-
-Тик по своим — это входящий урон, он идёт во вкладку «Получено», а не в
-общий урон. Раньше доты боссов по группе завышали наш урон: на реальном
-логе это 1,57M из 9,14M всего урона дотов.
-
-## Откуда берётся класс
-
-В `Chat.log` класса нет. Но имя строки скилла в самом клиенте его кодирует:
-`STR_SKILL_RA_MovingShot_G1` = «Gale Arrow I», где `RA` — рейнджер. Таблица
-лежит в `L10N/<язык>/data/data.pak` — это обычный ZIP, читается без ключей.
-
-При первом запуске метр собирает из него базу «скилл → класс» и кладёт в
-`%APPDATA%\Wingbeat\skills.json`. В репозиторий она не входит: это данные
-клиента. Пересобирается сама, когда клиент сменился или папка игры стала другой.
-
-На реальном логе: 4653 однозначных скилла, класс каждого из 14 активных
-игроков определился без единого конфликтующего голоса. У тех, кто бьёт
-только автоатаками, класса не будет — имени скилла в логе нет.
-
-## Иконки и названия
-
-Всё это лежит в папке `assets` рядом с программой — она приходит в архиве
-релиза. Ставить и настраивать ничего не нужно.
+**Click any row** to break it down: by skill on the damage and healing tabs, by
+item on loot, by participant on sessions.
 
 | | |
 |---|---|
-| иконки скиллов | 1 440 файлов, покрывают **96,8 %** имён в логе и **99,3 %** событий |
-| эмблемы классов | все 11 игровых классов |
-| названия предметов | 104 374 записи, **98,0 %** номеров из живого лога |
+| ![healing tab](docs/healing.png) | ![saved sessions](docs/sessions.png) |
+| **Healing** — the same layout, counted per caster. | **Sessions** — every past run, kept on disk. |
 
-Метр **в сеть не ходит вообще** и клиент игры в работе не трогает: читает
-только `Chat.log`. Ассеты собираются один раз при подготовке релиза.
+**Boss damage only** — a toggle in the window menu and in settings. The main
+target is whichever one took the most damage; adds stop counting and the shares
+are recalculated against the boss alone. The target's name shows in the footer,
+so you can see what the meter thinks the boss is.
 
-Свои картинки по-прежнему можно подложить, и они будут в приоритете:
-`%APPDATA%\Wingbeat\icons` для классов (`Ranger.png`, `RA.png`, `Sorc.png`
-и так далее) и `%APPDATA%\Wingbeat\skillicons` для скиллов, имя файла —
-точное название скилла с рангом. Пути к этим папкам правятся ключами icons_dir и skill_icons_dir в config.json.
+**Loot for the session** sits in the footer: XP, AP, kinah, mobs killed, PvP
+kills, deaths. The loot tab shows who picked up what, with item names and
+quality colours.
 
-Без иконок метр работает: класс виден по цвету строки, предмет — по номеру.
+![the window before the first hit](docs/idle.png)
 
-### Откуда предмет — со склада или с моба
+---
 
-Клиент этого не пишет. И дроп, и взятое со склада, и вложение из письма
-приходят одной и той же строкой `STR_MSG_GET_ITEM` — «You have acquired ...».
-Слова «warehouse» в логе нет вовсе, а «Mail has arrived» — только уведомление
-о письме, никак не связанное с моментом, когда вложение забирают. Покупки
-различать не нужно: у них своя строка, «You have purchased».
+## What it cannot do — and never will
 
-Раз источник не написан, метр судит по обстановке: настоящий дроп падает во
-время боя или сразу после него, а склад и почта — в городе. Окно после боя
-25 секунд: труп обыскивают не мгновенно. На живом логе это отсеивает 8 %
-подобранного — инсигнии, добавки, монеты, то есть ровно награды из почты.
+These are limits of the log itself, not of the program. There is no point
+working around them.
 
-Окно выбрано по колену кривой: при 10 с засчитывается 83 % добычи, при 25 с —
-92 %, при 60 с — 94 %, дальше рост прекращается. Более строгий вариант (считать
-только СВОЙ бой) отсеивал бы 20 %, но вместе с мусором выбрасывал руду, эфир и
-стигма-шарды, добытые не своими руками. Отключается галочкой в настройках.
+- **No target HP**, so no boss health bar and no overkill accounting: the
+  killing blow counts in full.
+- **One-second resolution.** Current-DPS error is roughly 1/window — about 10%
+  on a 10-second window. Comparing a peak DPS number against another meter
+  without stating the window is meaningless; the figures will not match.
+- **A group member cannot be told apart from a stranger** by a damage line —
+  the text is identical for both. So the meter does not try: the list is shared.
+- **Enemies cannot be spotted before they act.** The game does not log a hostile
+  player appearing, and faction is not in the log at all. A puller and an ally
+  look the same until one of them swings.
+- **Only skill hits carry a skill name.** Auto-attacks have none in the log, so
+  they are one line in the breakdown.
+- **Only what the client sees.** Damage beyond draw distance never reaches the
+  log, and shares are computed from what was seen.
 
-Качество предметов показывается цветом, как в игре: улучшенный зелёным,
-героический синим, мифический золотым.
+---
 
-![добыча](docs/loot.png)
+## Install
 
-Картинки и названия — собственность NCSoft. В репозитории их нет, лицензия
-MIT на них не распространяется.
+You need Windows and chat logging enabled in the game.
 
-## Установка
+**With the installer.** Download `WingbeatSetup-<version>.exe` from
+[Releases](../../releases) and run it. It installs into your user profile — no
+administrator rights needed. The wizard can add a desktop shortcut and start
+Wingbeat with Windows.
 
-Нужен Windows и включённое ведение чат-лога в игре.
+**From the archive.** Download `Wingbeat-<version>.zip`, unpack it anywhere and
+run `Wingbeat.exe`. Settings still live in `%APPDATA%\Wingbeat`, so the folder
+itself can be moved around freely.
 
-**Установщиком.** Скачайте `WingbeatSetup-<версия>.exe` из
-[Releases](../../releases) и запустите. Ставится в профиль пользователя,
-права администратора не нужны. В мастере можно сразу включить автозапуск
-вместе с Windows и ярлык на рабочем столе.
+Windows will show a SmartScreen warning — the build is not signed with a
+certificate. *More info* → *Run anyway*. The source is all here; you can read it
+and build it yourself.
 
-**Архивом.** Если ставить не хочется — скачайте `Wingbeat-<версия>.zip`,
-распакуйте куда угодно и запустите `Wingbeat.exe`. Настройки при этом всё
-равно лягут в `%APPDATA%\Wingbeat`, так что папку можно переносить.
-
-Windows покажет предупреждение SmartScreen — сборка не подписана сертификатом.
-«Подробнее» → «Выполнить в любом случае». Исходники здесь целиком, их можно
-прочитать и собрать самому.
-
-**Из исходников.**
+**From source.**
 
 ```
 py -m pip install -r requirements.txt
 py main.py
 ```
 
-## Первый запуск
+---
 
-При первом старте метр сам ищет игру. Если не нашёл — откроются настройки,
-укажите **папку с игрой** кнопкой «Обзор». Файл лога метр найдёт в ней сам и
-покажет строкой под полем, какой именно читает и какого он размера.
+## First run
 
-**Если файла ещё нет**, метр не сдаётся: он ждёт и начнёт считать сам, как
-только игра создаст Chat.log. Порядок «сначала метр, потом игра» — обычный,
-особенно когда метр стоит в автозапуске.
+The meter looks for the game on its own. If it does not find it, settings open:
+point **Game folder** at your client with *Browse*. The log file is found inside
+it automatically, and the line underneath shows which one is being read and how
+large it is.
 
-**Если файл не появляется вовсе**, значит клиент не ведёт чат-лог. Включается это по-разному:
-в лаунчере сервера (пункт вроде Chat log / Console), либо параметром
-`g_chatlog = "1"` в `system.cfg`. Wingbeat сам ничего в игру не прописывает
-намеренно — правку клиента лучше делать штатными средствами вашего сервера.
+![settings](docs/settings.png)
 
-**Оверлей не виден?** Игра должна быть в оконном полноэкранном режиме
-(borderless / windowed fullscreen). В эксклюзивном полноэкранном поверх игры
-не рисуется ничего — это ограничение DirectX, а не программы.
+**If the log does not exist yet**, the meter waits and starts counting the
+moment the game creates it. Launching the meter before the game is the normal
+order, especially with autostart.
 
-## Управление
+**If it never appears**, your client is not writing a chat log. That is turned
+on either in the server launcher (something like *Chat log*), or with
+`g_chatlog = "1"` in `system.cfg`. Wingbeat will not write anything into the
+game itself — that is your call to make, not the meter's.
 
-**Кнопки на панели** слева направо: Старт, Стоп, Очистить, Скопировать
-в чат, Настройки. Справа — меню и выход. Наведите курсор: название кнопки
-покажется в строке ниже.
+---
 
-**Вкладки** слева переключают, что считать: урон, хил, полученный урон или
-добычу. Под ними — строка заголовков колонок.
+## Controls
 
-В узком окне раскладка деградирует сама: сначала укорачиваются подписи
-вкладок, потом отбрасываются колонки справа налево — крит, удары, доля.
-Ник не ужимается ниже 96 px: строку, где от имени осталось «Ste…», читать
-невозможно, а доля и удары — величины справочные.
+Drag the window by any part of it, resize it from the corner. Hovering a button
+shows its name and a one-line explanation above it.
 
-**Клик по строке игрока** раскрывает разбор: по скиллам на вкладках урона и
-хила, по предметам — на вкладке добычи, по участникам — на вкладке сессий.
-Повторный клик сворачивает.
-
-**Меню** — три полоски справа в шапке. Открывается сбоку от окна, а не
-поверх таблицы: меню, закрывающее те самые строки, ради которых окно и
-открыто, бесполезно. Если сбоку места на экране нет, уходит под окно.
-
-| Действие | По умолчанию |
+| Action | Default |
 |---|---|
-| Очистить | Ctrl+Shift+F1 |
-| Старт / стоп | Ctrl+Shift+F2 |
-| Клик насквозь вкл/выкл | Ctrl+Shift+F3 |
-| Скрыть / показать | Ctrl+Shift+F4 |
-| Скопировать в буфер | Ctrl+Shift+F5 |
-| Режим стримера | Ctrl+Shift+F6 |
+| Reset | Ctrl+Shift+F1 |
+| Start / pause | Ctrl+Shift+F2 |
+| Click-through on/off | Ctrl+Shift+F3 |
+| Hide / show | Ctrl+Shift+F4 |
+| Copy to clipboard | Ctrl+Shift+F5 |
+| Streamer mode | Ctrl+Shift+F6 |
 
-Иконка в трее дублирует меню и нужна, когда включён клик насквозь.
-Окно перетаскивается за любое место, размер меняется за уголок.
+The tray icon mirrors the menu and is how you reach the meter when
+click-through is on.
 
-Хоткею обязателен модификатор, иначе клавишу перехватит игра. Если сочетание
-занято другой программой, метр скажет об этом при запуске — например,
-`Ctrl+Shift+F1` часто занят программами записи экрана.
+Hotkeys need a modifier, or the game swallows the key. If a combination is
+already taken by another program, the meter says so at startup — `Ctrl+Shift+F1`
+is often claimed by screen recorders.
 
-Умолчания намеренно на F-клавишах, а не на буквах. На немецкой, польской и
-французской раскладках AltGr посылается системой как Ctrl+Alt, поэтому
-сочетание вроде Ctrl+Alt+C глобально отбирает у человека ввод буквы во всех
-программах, пока метр запущен, — и регистрация при этом проходит успешно,
-так что и предупреждения он не увидит.
+The defaults sit on F-keys deliberately, not letters. On German, Polish and
+French layouts AltGr is delivered as Ctrl+Alt, so a binding like Ctrl+Alt+C
+would globally steal that letter from you in every program while the meter runs —
+and registration still succeeds, so you would not even get a warning.
 
-## Режим стримера
+In a narrow window the layout degrades on its own: tab labels shorten first,
+then columns drop from the right — crits, hits, share. The name column never
+goes below 96 px, because a row reading `Ste…` is useless, while share and hits
+are only reference figures.
 
-Кнопка с экраном в панели или Ctrl+Shift+F6. Окно превращается в чистые
-полосы урона на однотонном зелёном фоне: ни шапки, ни кнопок, ни сводки, ни
-подвала, ни рамки. Этот фон вырезается в OBS фильтром «Хромакей», и на
-трансляции остаются только строки.
+---
 
-Выйти можно тремя способами: крестик в правом верхнем углу окна, то же
-сочетание клавиш, пункт в меню значка в трее.
+## Streamer mode
 
-Цвет фона задаётся ключом `chroma_color` в настройках, по умолчанию
-`#00B140` — стандартный зелёный, а не чистый `#00FF00`: последний слишком
-близок к подсветке интерфейса игры и выедает края букв при кеинге. Клик
-насквозь и прозрачность на время режима отключаются: сквозь прозрачное окно
-не нажать кнопку выхода, а хромакею нужен сплошной фон. При выходе обе
-настройки возвращаются как были.
+The screen button, or Ctrl+Shift+F6. The window becomes bare damage rows on a
+flat green background — no header, no buttons, no summary, no footer, no frame.
+OBS keys that background out with a Chroma Key filter and only the rows remain.
 
-## Сессии
+![streamer mode](docs/streamer.png)
 
-Сессия — это один заход, каким его считает человек: она начинается с первого
-удара и живёт, пока не нажата «Очистить». Выход из программы закрывает её
-тоже — иначе вечерний фарм пропадал бы целиком.
+Three ways out: the cross in the top right corner, the same hotkey, or the tray
+menu.
 
-Хранятся сессии файлами в `%APPDATA%\Wingbeat\sessions`, по одному JSON на
-сессию, имя — по времени начала. Базы данных здесь нет намеренно: пишется
-сессия дважды за вечер, читается пачкой при открытии вкладки, а файл можно
-открыть, переслать и удалить руками. Он же и есть готовый отчёт, если цифры
-разошлись и надо показать, из чего они сложились.
+The colour is `chroma_color` in settings, `#00B140` by default — the standard
+green, not pure `#00FF00`. Pure green sits too close to the game's own interface
+glow and eats the edges of letters when keyed. Click-through and transparency
+are switched off while the mode is on: you cannot press the exit button through
+a transparent window, and keying needs a solid background. Both come back as
+they were when you leave.
 
-Внутри: время и длительность, главная цель, убитые, добыча, и по каждому
-участнику — урон, удары, криты, максимальный удар, топ скиллов и топ целей.
-Сколько сессий держать, задаётся в настройках (по умолчанию 200, старые
-удаляются сами). Сохранение можно выключить совсем.
+---
 
-## Как считаются цифры
+## Sessions
 
-| Величина | Формула |
+A session is one run, the way a person means it: it starts with the first hit
+and lives until you press Reset. Quitting closes it too — otherwise an evening
+of farming would vanish whole.
+
+Sessions are files in `%APPDATA%\Wingbeat\sessions`, one JSON each, named by
+start time. There is deliberately no database here: a session is written twice
+an evening, read in a batch when you open the tab, and a file can be opened,
+sent to someone and deleted by hand. It is also the report itself, if the
+numbers are disputed and you need to show what they were made of.
+
+Inside: time and duration, the main target, kills, loot, and per participant —
+damage, hits, crits, biggest hit, top skills and top targets. How many to keep
+is a setting (200 by default, older ones are dropped). Saving can be turned off
+entirely.
+
+---
+
+## How the numbers are worked out
+
+| Value | Formula |
 |---|---|
-| **Урон** | сумма всех строк урона игрока за текущий счёт |
-| **DPS** (колонка) | сумма за последние `окно` секунд ÷ `окно`. По умолчанию 10 с. Последняя секунда файла не берётся: она ещё пишется, и число дёргалось бы |
-| **DPS**, когда боя нет | средний: урон ÷ **активное время** |
-| **активное время** | сумма отрезков, между которыми перерыв не больше `разрыва активности` (по умолчанию 8 с). Не календарное время боя: стоял без дела — время не идёт |
-| **%** | доля от суммы всех видимых строк |
-| **полоса** | доля от ЛИДЕРА, а не от суммы: у первого места она всегда во всю ширину |
-| **нить темпа** | текущий DPS ÷ текущий DPS лидера |
-| **удары** | число строк урона, включая тики дотов |
-| **крит** | доля критов от всех ударов |
-| **только босс** | урон и удары по главной цели; обе колонки скорости при этом показывают урон по боссу на активное время — посекундной раскладки по каждой цели метр не ведёт, и «текущий» DPS там взять неоткуда |
+| **Damage** | every damage line for that player in the current count |
+| **DPS** (column) | damage in the last `window` seconds ÷ `window`. 10 s by default. The final second of the file is skipped — it is still being written, and the number would jitter |
+| **DPS** when nothing is happening | average: damage ÷ **active time** |
+| **active time** | the sum of stretches separated by no more than the `activity gap` (8 s by default). Not wall-clock: standing idle does not count |
+| **%** | share of the sum of all visible rows |
+| **rail** | share of the **leader**, not of the total — first place is always full width |
+| **pace thread** | your current DPS ÷ the leader's current DPS |
+| **hits** | number of damage lines, periodic ticks included |
+| **crit** | share of crits among all hits |
+| **boss only** | damage and hits on the main target; both speed columns then show boss damage over active time, because the meter keeps no per-second breakdown per target |
 
-Разница между «средним» и «по календарю» доходит до 20 раз на одних и тех же
-данных, поэтому метр считает по активному времени — это модель Recount, а не
-Skada. Точность ограничена самим логом: время в нём с точностью до секунды,
-поэтому погрешность окна около 1/окно, то есть примерно 10 % при окне 10 с.
+The gap between "average" and "wall-clock" reaches 20× on the same data, which
+is why active time is used — the Recount model, not the Skada one.
 
-## Настройки
+---
 
-Окно настроек открывается шестерёнкой на панели или из меню в трее. В нём
-четыре вкладки и ровно то, что у разных людей действительно разное:
+## Periodic damage
 
-- **Игра** — папка с игрой и свой ник. Всё.
-- **Окно** — поверх всех окон, прозрачный фон, клик насквозь, строка добычи
-  внизу, непрозрачность.
-- **Сессии** — сохранять ли их и сколько хранить.
-- **Клавиши** — глобальные сочетания.
-
-Полоса крупных кнопок и полоска опыта с кинарой в настройки не вынесены:
-это часть окна, а не выбор. Выключаемая половина интерфейса — это две
-программы вместо одной, и обе пришлось бы проверять.
-
-Чего в окне нет намеренно. Кодировка лога определяется по содержимому.
-База классов собирается из вашей же установки игры и пересобирается сама,
-когда клиент сменился. Параметры расчёта — окно текущего DPS (10 с), конец
-боя после тишины (12 с), разрыв активности (8 с) — зашиты: это не вкус, а
-определения величин, и если они у всех разные, цифры несравнимы, а метр
-нужен именно для сравнения.
-
-Все настройки по-прежнему лежат в `%APPDATA%\Wingbeat\config.json`, и
-править их руками можно — просто это не то, что стоит совать каждому.
-
-**Меню окна** — три полоски справа в шапке. Это переключатели на один вечер,
-а не настройки: только урон по боссу, строка добычи внизу, клик насквозь,
-прозрачный фон, поверх всех окон. Первой строкой в нём видно, сколько строк
-лога распознано. Открывается меню сбоку от окна, чтобы не закрывать таблицу.
-
-## Если метр показывает нули
-
-Внизу окна настроек есть счётчик `разбор: N/M` — сколько строк распознано из
-прочитанных. Нераспознанные складываются в `%APPDATA%\Wingbeat\unknown.log`.
-
-Строки чата туда не попадают: ни ваши реплики, ни шёпот, ни разговоры
-согруппников. Этот файл прикладывают к сообщению о проблеме, и чужим
-разговорам там не место. Размер ограничен мегабайтом, предыдущий файл
-сохраняется рядом с суффиксом .prev.
-
-Резкий рост нераспознанных означает, что сервер сменил тексты боевых сообщений
-или у клиента другой язык. Регулярки рассчитаны на английский клиент.
-Пришлите кусок `unknown.log` в Issues — добавлю шаблоны.
-
-## Как это устроено
+A damage-over-time tick looks like this in the log:
 
 ```
-Chat.log ──► Tailer ──► parser ──► Meter ──► Overlay
- (игра)      ctypes     regex      окна,      PySide6
-                                   бои
+High Priest Esras received 745 damage due to the effect of Flame Cage V.
 ```
 
-- [`wingbeat/tailer.py`](wingbeat/tailer.py) — чтение растущего файла.
-  `FILE_SHARE_DELETE`, чтобы не мешать игре удалять лог; детект ротации по
-  идентичности файла и подписи содержимого; незавершённая строка не отдаётся.
-- [`wingbeat/parser.py`](wingbeat/parser.py) — грамматика боевых сообщений.
-  Выведена из таблицы шаблонов самого клиента (`client_strings_msg.xml` внутри
-  `data.pak`), а не подобрана на глаз.
-- [`wingbeat/aggregate.py`](wingbeat/aggregate.py) — окна DPS, активное время,
-  нарезка боёв, петы, мобы, добыча.
-- [`wingbeat/overlay.py`](wingbeat/overlay.py) — окно, панель, таблица.
-
-Самопроверка ядра, без графики и без интернета:
+There is no author in that line, in any variant of the client's templates. But
+there is one at the moment it was applied:
 
 ```
-py tests.py
+Loluu inflicted 1 234 damage on High Priest Esras by using Flame Cage V.
+High Priest Esras is in the burning state because Loluu used Flame Cage V.
 ```
 
-Консольный режим — удобно проверить, что цифры вообще считаются:
+So the meter remembers who last applied a skill to that target and credits the
+following ticks to them. **If two sorcerers overwrite each other's dots, the
+damage goes to whoever applied last** — that is not a guess, it is the game's
+own mechanic: the new dot replaces the old one and it is the last one ticking.
+
+When there is nowhere to take the author from — some skills such as `Lava
+Tsunami` tick with no direct-hit line at all — but the skill is in the class
+database and exactly one player of that class is in the fight, it goes to them.
+Otherwise it stays on a `(periodic)` row, together with godstone procs like
+`Magical Water Damage Effect`, which have no owner in principle.
+
+A tick on your own group is *incoming* damage and goes to the Damage Taken tab,
+not into the group's output. Before that was separated, boss dots inflated the
+group's damage by 1.57M out of 9.14M total dot damage on a real log.
+
+---
+
+## Where the class comes from
+
+`Chat.log` has no class in it. But the skill's string name inside the client
+encodes one: `STR_SKILL_RA_MovingShot_G1` is "Gale Arrow I", where `RA` is
+Ranger. That table lives in `L10N/<language>/data/data.pak`, an ordinary ZIP
+that opens without any keys.
+
+On first run the meter builds a *skill → class* database from it and stores it
+in `%APPDATA%\Wingbeat\skills.json`. It is not in this repository — it is client
+data. It rebuilds itself when the client changes or the game folder moves.
+
+On a real log: 4653 unambiguous skills, and the class of all 14 active players
+resolved without a single conflicting vote. Players who only auto-attack get no
+class — there is no skill name in the log to go on.
+
+---
+
+## Privacy
+
+The meter reads your chat log, which is a position of trust, so it is worth
+being exact about what it does.
+
+**It reads** one file: `Chat.log` inside your game folder, opened for reading
+only.
+
+**It writes** only inside `%APPDATA%\Wingbeat` — settings, your sessions, the
+skill and item databases built from your own client, and a log of its own
+operation.
+
+**It sends** nothing anywhere. The only network request it makes is an update
+check against the GitHub releases API, and that can be switched off in settings.
+
+![about window](docs/about.png)
+
+Uploading fights to a ranking site is being built, and when it arrives it will
+be **off by default**, will ask before the first upload, and will say exactly
+what leaves your machine.
+
+---
+
+## If the meter shows zeros
+
+1. **Is the game writing the log at all?** Open the game folder and look at the
+   size of `Chat.log` — if it is not growing while you fight, chat logging is off.
+2. **Is the right file being read?** Settings show the full path and size of the
+   file in use.
+3. **Is the meter paused?** The dot in the bottom left is grey when paused.
+4. **Is the counter empty?** Reset clears it; the count starts again from the
+   next hit.
+
+The status line in settings shows how many lines were recognised out of how many
+were read. If that ratio is far below 100%, the log is in an unexpected format —
+open an issue and attach a few lines.
+
+---
+
+## Building
 
 ```
-py console.py --once     разобрать весь лог и напечатать отчёт
-py console.py            живая таблица в консоли
+py build.py            # dist/Wingbeat — the program itself
+py installer/make.py   # installer/out/WingbeatSetup-<version>.exe
 ```
 
-## Обновления
+The installer needs [Inno Setup 6](https://jrsoftware.org/isdl.php).
 
-При запуске метр один раз спрашивает у GitHub, не вышла ли версия новее, и
-если вышла — говорит об этом уведомлением. Ничего не скачивает и не подменяет
-сам: тихо заменять exe у человека — плохая идея. Проверка выключается ключом check_updates в config.json, и тогда программа
-не выходит в сеть вообще никогда.
+Note that `assets/` is not in this repository: icons and item names are
+extracted from your own game client, and they belong to NCSoft. A build without
+them runs, but shows no icons and no item names.
 
-Ручная проверка — в меню значка в трее.
+---
 
-## Если что-то пошло не так
+## License
 
-Метр пишет свой лог в `%APPDATA%\Wingbeat\wingbeat.log` — туда попадают
-версия, найденный клиент, размер чат-лога, состав ассет-пака и полные
-трейсбеки падений. Открыть папку можно из меню в трее. Этот файл — то, что
-стоит приложить к сообщению о проблеме.
+MIT — see [LICENSE](LICENSE).
 
-## Сборка
+Aion and its images and names are the property of NCSoft. They are not in this
+repository, and the MIT license does not extend to them.
 
-```
-py -m pip install pyinstaller
-py build.py                 # -> dist/Wingbeat
-py installer/make.py        # -> installer/out/WingbeatSetup-<версия>.exe
-```
-
-Для установщика нужен [Inno Setup 6](https://jrsoftware.org/isdl.php).
-
-Программа собирается папкой, а не одним файлом, и без UPX: одиночный сжатый
-exe от неизвестного издателя антивирусы любят класть в карантин.
-
-Папка `assets` в репозиторий не входит и собирается отдельно из клиента игры.
-Без неё сборка проходит, но выйдет без иконок и названий — `build.py` про это
-предупреждает. Версия задаётся в одном месте, `wingbeat/version.py`, и оттуда
-попадает и в программу, и в имя файла установщика, и в проверку обновлений.
-
-## Лицензия
-
-MIT.
+Made by Steepeek for Aion Origin · [wingbeat.fun](https://wingbeat.fun)
